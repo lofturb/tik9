@@ -232,7 +232,8 @@
     if (video.portada.length) {
         __weak TTVideoCell *deb = self;
         [TTCliente cargarImagen:video.portada completado:^(UIImage *imagen) {
-            if (imagen && deb && deb->_video == video) deb->_portada.image = imagen;
+            TTVideoCell *celda = deb;
+            if (imagen && celda && celda->_video == video) celda->_portada.image = imagen;
         }];
     }
 
@@ -245,9 +246,10 @@
     if (video.autorAvatar.length) {
         __weak TTVideoCell *deb = self;
         [TTCliente cargarImagen:video.autorAvatar completado:^(UIImage *imagen) {
-            if (imagen && deb && [deb->_urlAvatarPendiente isEqualToString:video.autorAvatar]) {
-                deb->_avatar.image = imagen;
-                deb->_avatar.contentMode = UIViewContentModeScaleAspectFill;
+            TTVideoCell *celda = deb;
+            if (imagen && celda && [celda->_urlAvatarPendiente isEqualToString:video.autorAvatar]) {
+                celda->_avatar.image = imagen;
+                celda->_avatar.contentMode = UIViewContentModeScaleAspectFill;
             }
         }];
     }

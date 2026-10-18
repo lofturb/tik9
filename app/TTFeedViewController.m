@@ -13,6 +13,9 @@
 #import <QuartzCore/QuartzCore.h>
 #import <math.h>
 
+@interface TTFeedViewController () <UITableViewDataSource, UITableViewDelegate>
+@end
+
 @implementation TTFeedViewController {
     UITableView *_tabla;
     UIView *_barraSuperior;
@@ -64,8 +67,11 @@
     _tabla.backgroundColor = [UIColor blackColor];
     _tabla.contentInset = UIEdgeInsetsZero;
     _tabla.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
-    if ([_tabla respondsToSelector:@selector(setContentInsetAdjustmentBehavior:)]) {
-        _tabla.contentInsetAdjustmentBehavior = 2;   // nunca (iOS 11+)
+    // En iOS 9/10 el ajuste se hace con automaticallyAdjustsScrollViewInsets; en
+    // iOS 11+ esa propiedad se ignora y hay que usar contentInsetAdjustmentBehavior.
+    // La segunda no existe en el SDK 9.3, asi que se busca en tiempo de ejecucion.
+    if ([_tabla respondsToSelector:NSSelectorFromString(@"setContentInsetAdjustmentBehavior:")]) {
+        [_tabla setValue:@(2) forKey:@"contentInsetAdjustmentBehavior"];   // nunca (iOS 11+)
     } else {
         self.automaticallyAdjustsScrollViewInsets = NO;   // iOS 9/10
     }

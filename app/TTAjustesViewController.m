@@ -6,6 +6,9 @@
 #import "TTResolvedor.h"
 #import "TTFavoritos.h"
 
+@interface TTAjustesViewController () <UITableViewDataSource, UITableViewDelegate>
+@end
+
 @implementation TTAjustesViewController {
     UITableView *_tabla;
     UIAlertController *_espera;

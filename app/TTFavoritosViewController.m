@@ -102,6 +102,9 @@
 
 #pragma mark - Lista de favoritos
 
+@interface TTFavoritosViewController () <UITableViewDataSource, UITableViewDelegate>
+@end
+
 @implementation TTFavoritosViewController {
     UITableView *_tabla;
 }
