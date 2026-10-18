@@ -332,17 +332,42 @@ Comprobaciones que descartan las otras explicaciones:
 
 **La palanca: App Transport Security.** El `Info.plist` tenía
 `NSAllowsArbitraryLoads = true` (para poder hablar HTTP plano con el relay y con
-CDNs de TLS flojo). Apple documenta que, con ese permiso, «las comprobaciones
-extendidas —como exigir una versión mínima de TLS— quedan desactivadas», y
-**HTTP/2 exige TLS 1.2**. La excepción por dominio es la que evita elegir entre
-una cosa y la otra (documentado en el mismo sitio: «los dominios que
-especifiques en ese diccionario no se ven afectados por el valor de esa clave»,
-aunque el diccionario esté vacío). Así que el `Info.plist` ahora **exige ATS en
-`www.tiktok.com`** (TLS 1.2 + secreto hacia adelante) y deja el permiso global
-para el resto. Si aun así no llegara HTTP/2, el informe dirá qué protocolo y qué
-TLS se negociaron, y quedan dos planes: quitar el permiso global (rompe el relay
-por HTTP plano) o pedir la búsqueda desde un `WKWebView` (WebKit sí negocia
-HTTP/2 y no le afecta ATS en iOS 9).
+CDNs de TLS flojo), y con ese permiso iOS desactiva las comprobaciones extendidas
+de TLS. Así que se pasó a **exigir ATS en `www.tiktok.com`** (TLS 1.2 + secreto
+hacia adelante) dejando el permiso global para el resto. **No sirvió**: la
+búsqueda siguió saliendo con `connection: keep-alive` (o sea, HTTP/1.1).
+
+**Y entonces salió el dato que lo explica todo.** El diagnóstico nuevo pregunta a
+`https://www.cloudflare.com/cdn-cgi/trace` qué ve Cloudflare al otro lado, y en el
+teléfono contesta:
+
+```
+eco de protocolo: http=http/1.1 tls=TLSv1.3 kex=X25519
+```
+
+Cloudflare ve **TLS 1.3 con X25519**, y iOS 9 no sabe hacer ni lo uno ni lo otro
+(TLS 1.3 llegó a iOS con la 12.2). Es decir: **entre el teléfono y TikTok hay un
+intermediario** — un proxy, una VPN o un bloqueador — que corta el TLS, lo rehace
+por su cuenta (con su pila moderna) y **reorigina la conexión en HTTP/1.1**. Por
+eso todo el tráfico del teléfono es h1, incluso contra servidores que ofrecen h2,
+y por eso la búsqueda contesta vacío mientras el feed va perfecto.
+
+El diagnóstico ahora lo comprueba de tres maneras y lo dice en una línea:
+
+* `eco de protocolo` (la traza de Cloudflare: `http=`, `tls=`, `kex=`),
+* **la cadena de certificados de `www.tiktok.com`** (cuántos trae, cómo se llama
+  cada uno y la huella del de la hoja): si no la firma una autoridad pública, ahí
+  está el intermediario,
+* una petición a `https://self-signed.badssl.com/`, cuyo certificado no firma
+  nadie: si **sale bien**, es que alguien lo está firmando por el camino,
+* `CFNetworkCopySystemProxySettings` (el proxy de Ajustes → Wi-Fi) y la versión
+  del sistema.
+
+La salida, por tanto, no está en la app: hay que **quitar ese intermediario**
+(Ajustes → General → Perfil/Administración de dispositivos, Ajustes → VPN, o el
+tweake que sea). Sin él, el teléfono negociará h2 y la búsqueda funcionará como
+funciona en Python. Si no se puede quitar, queda el plan B sin intermediario:
+pedir la búsqueda desde un `WKWebView` (WebKit trae su propia pila de red).
 
 ---
 

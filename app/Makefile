@@ -42,8 +42,9 @@ Tik9_FILES = \
 
 # QuartzCore para las capas (esquinas redondeadas, sombreado del texto) y
 # AVFoundation para reproducir.  MediaPlayer solo para el mando del sistema
-# (los botones +/-10 s de la pantalla de bloqueo).
-Tik9_FRAMEWORKS = UIKit Foundation CoreGraphics QuartzCore AVFoundation MediaPlayer
+# (los botones +/-10 s de la pantalla de bloqueo).  Security es para mirar la
+# cadena de certificados del diagnostico, y CFNetwork para el proxy del sistema.
+Tik9_FRAMEWORKS = UIKit Foundation CoreGraphics QuartzCore AVFoundation MediaPlayer Security CFNetwork
 Tik9_CFLAGS = -fobjc-arc -Wno-deprecated-declarations -Wno-unused-parameter
 Tik9_RESOURCE_DIRS = Resources
 

@@ -3,6 +3,8 @@
 #import "TTSesion.h"
 #import "TTSignaCore.h"
 #import "TTResolvedor.h"
+#import <Security/Security.h>
+#import <CFNetwork/CFNetwork.h>
 #import <stdlib.h>
 
 NSString * const TTErrorDominio = @"Tik9";
@@ -18,6 +20,14 @@ static NSError *TTError(TTCodigoError codigo, NSString *texto) {
     return [NSError errorWithDomain:TTErrorDominio code:codigo
                            userInfo:@{ NSLocalizedDescriptionKey : texto }];
 }
+
+// Mira quien firma el certificado de la conexion.  Sirve para saber si hay un
+// intermediario (un proxy, una VPN, un bloqueador) cortando el trafico: si la
+// cadena no la firma una autoridad publica conocida, ese es el problema -- y su
+// nombre suele salir en la lista.  La implementacion esta al final del fichero.
+@interface TTCertificados : NSObject <NSURLSessionDelegate>
+@property (nonatomic, strong) NSMutableArray *apuntes;
+@end
 
 // Metodos internos, declarados antes de usarlos para no depender del orden del
 // fichero.
@@ -52,10 +62,15 @@ static NSError *TTError(TTCodigoError codigo, NSString *texto) {
          ruta:(NSString *)ruta
         pares:(NSArray *)pares
        intento:(NSInteger)intento
+         pasos:(NSMutableArray *)pasos
        lineas:(NSMutableArray *)lineas
    completado:(void (^)(void))completado;
 - (void)ecoDeProtocolo:(NSMutableArray *)lineas completado:(void (^)(void))completado;
+- (void)sondaDeCertificado:(NSMutableArray *)lineas completado:(void (^)(void))completado;
+- (void)sondaDeIntermediario:(NSMutableArray *)lineas completado:(void (^)(void))completado;
+- (void)sondaDeProxy:(NSMutableArray *)lineas completado:(void (^)(void))completado;
 - (void)sondaDeRelay:(NSMutableArray *)lineas completado:(void (^)(void))completado;
+- (void)rematarInforme:(NSMutableArray *)lineas;
 @end
 
 @implementation TTCliente
@@ -397,21 +412,26 @@ static NSError *TTError(TTCodigoError codigo, NSString *texto) {
     return pares;
 }
 
-// Una sonda con el mismo reintento que la busqueda real.  Deja en el informe lo
-// que contesta TikTok: codigo, bytes, tt_orcas_res, status_code y la cabecera
-// Connection, que es la que delata HTTP/1.1 (en HTTP/2 no existe).
+// Una sonda con el mismo reintento que la busqueda real, resumida en UNA linea
+// por prueba (asi el informe se lee entero de un vistazo): codigo y bytes, la
+// cabecera tt_orcas_res, el status_code, la cabecera Connection (que es la que
+// delata HTTP/1.1: en HTTP/2 no existe), el msToken que regalen y los videos
+// que salgan.
 - (void)sonda:(NSString *)etiqueta
          ruta:(NSString *)ruta
         pares:(NSArray *)pares
        lineas:(NSMutableArray *)lineas
    completado:(void (^)(void))completado {
-    [self sonda:etiqueta ruta:ruta pares:pares intento:1 lineas:lineas completado:completado];
+    NSMutableArray *pasos = [NSMutableArray array];
+    [self sonda:etiqueta ruta:ruta pares:pares intento:1 pasos:pasos lineas:lineas
+     completado:completado];
 }
 
 - (void)sonda:(NSString *)etiqueta
          ruta:(NSString *)ruta
         pares:(NSArray *)pares
        intento:(NSInteger)intento
+         pasos:(NSMutableArray *)pasos
        lineas:(NSMutableArray *)lineas
    completado:(void (^)(void))completado {
 
@@ -429,35 +449,42 @@ static NSError *TTError(TTCodigoError codigo, NSString *texto) {
                           ? json[@"status_msg"] : @"";
             }
         }
+        NSUInteger videos = 0;
+        if (json[@"data"] || json[@"itemList"]) {
+            videos = [self videosDeRespuestaDeBusqueda:json].count;
+            id lista = json[@"itemList"];
+            if (!videos && [lista isKindOfClass:[NSArray class]]) {
+                videos = [(NSArray *)lista count];
+            }
+        }
         NSString *orcas = [self cabecera:@"tt_orcas_res" de:respuesta];
         NSString *conn  = [self cabecera:@"connection" de:respuesta];
-        [lineas addObject:[NSString stringWithFormat:
-            @"%@ %ld) HTTP %ld  %lu B  orcas=%@  status=%ld  connection=%@  %@",
-            etiqueta, (long)intento, (long)(respuesta ? respuesta.statusCode : 0),
-            (unsigned long)datos.length, orcas.length ? orcas : @"-", (long)estado,
-            conn.length ? conn : @"(no hay)", mensaje]];
-        if (error) {
-            [lineas addObject:[NSString stringWithFormat:@"   error: %@",
-                               error.localizedDescription]];
-        }
-        if (json) {
-            [lineas addObject:[NSString stringWithFormat:@"   videos leidos: %lu",
-                               (unsigned long)[self videosDeRespuestaDeBusqueda:json].count]];
-        }
         NSString *nuevo = [self msTokenDeRespuesta:respuesta];
-        if (nuevo.length) {
-            [lineas addObject:[NSString stringWithFormat:@"   regala msToken de %lu car.: %@...",
-                               (unsigned long)nuevo.length,
-                               [nuevo substringToIndex:MIN((NSUInteger)8, nuevo.length)]]];
-        }
-        // El mismo reintento que hace la busqueda de verdad, contado paso a paso.
+        NSMutableString *paso = [NSMutableString stringWithFormat:
+            @"%ld) HTTP %ld, %lu B", (long)intento,
+            (long)(respuesta ? respuesta.statusCode : 0), (unsigned long)datos.length];
+        if (orcas.length) [paso appendFormat:@" orcas=%@", orcas];
+        if (estado != 0) [paso appendFormat:@" status=%ld", (long)estado];
+        if (conn.length) [paso appendFormat:@" conn=%@", conn];
+        if (nuevo.length) [paso appendFormat:@" regala=%lu car.", (unsigned long)nuevo.length];
+        if (json) [paso appendFormat:@" videos=%lu", (unsigned long)videos];
+        if (mensaje.length) [paso appendFormat:@" \"%@\"", mensaje];
+        if (error) [paso appendFormat:@" error=%@", error.localizedDescription];
+        [pasos addObject:paso];
+
+        // El mismo reintento que hace la busqueda de verdad, contado en la misma
+        // linea: sin el, un rechazo por msToken caducado parece un fallo.
         if (intento == 1 && nuevo.length && (error || estado == 2483 || datos.length == 0)) {
             [[TTSesion compartida] guardarMsTokenAprendido:nuevo];
-            [lineas addObject:@"   -> se guarda ese msToken y se repite"];
-            [self sonda:etiqueta ruta:ruta pares:pares intento:2 lineas:lineas
+            [lineas addObject:[NSString stringWithFormat:@"%@: %@   -> regala un msToken y se repite",
+                               etiqueta, paso]];
+            [pasos removeAllObjects];
+            [self sonda:etiqueta ruta:ruta pares:pares intento:2 pasos:pasos lineas:lineas
              completado:completado];
             return;
         }
+        [lineas addObject:[NSString stringWithFormat:@"%@: %@", etiqueta,
+                           [pasos componentsJoinedByString:@"   "]]];
         completado();
     }];
 }
@@ -480,7 +507,8 @@ static NSError *TTError(TTCodigoError codigo, NSString *texto) {
                                                     encoding:NSUTF8StringEncoding] ?: @"";
             NSMutableArray *trozos = [NSMutableArray array];
             for (NSString *linea in [texto componentsSeparatedByString:@"\n"]) {
-                if ([linea hasPrefix:@"http="] || [linea hasPrefix:@"tls="]) {
+                if ([linea hasPrefix:@"http="] || [linea hasPrefix:@"tls="]
+                    || [linea hasPrefix:@"kex="]) {
                     [trozos addObject:linea];
                 }
             }
@@ -518,6 +546,80 @@ static NSError *TTError(TTCodigoError codigo, NSString *texto) {
     }] resume];
 }
 
+// Mira el certificado con el que responde www.tiktok.com: cuantos certificados
+// trae la cadena, quien es cada uno y la huella del de la hoja.  En una conexion
+// normal la cadena la firma una autoridad publica (DigiCert, Let's Encrypt...);
+// si aparece otra cosa, ahi esta el intermediario.
+- (void)sondaDeCertificado:(NSMutableArray *)lineas completado:(void (^)(void))completado {
+    TTCertificados *vidente = [[TTCertificados alloc] init];
+    vidente.apuntes = [NSMutableArray array];
+    NSURLSession *sesion = [NSURLSession sessionWithConfiguration:
+                            [NSURLSessionConfiguration ephemeralSessionConfiguration]
+                                                        delegate:vidente
+                                                   delegateQueue:nil];
+    NSMutableURLRequest *peticion = [NSMutableURLRequest requestWithURL:
+        [NSURL URLWithString:@"https://www.tiktok.com/favicon.ico"]];
+    peticion.timeoutInterval = 15.0;
+    [[sesion dataTaskWithRequest:peticion
+        completionHandler:^(NSData *datos, NSURLResponse *respuesta, NSError *error) {
+        (void)datos; (void)respuesta;
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [lineas addObject:@"certificado de www.tiktok.com:"];
+            [lineas addObjectsFromArray:vidente.apuntes];
+            if (error) {
+                [lineas addObject:[NSString stringWithFormat:@"  error: %@",
+                                   error.localizedDescription]];
+            }
+            [sesion finishTasksAndInvalidate];
+            completado();
+        });
+    }] resume];
+}
+
+// Pide una pagina con certificado que no firma nadie (self-signed.badssl.com).
+// Por HTTP normal eso no puede salir bien; si sale bien, hay alguien firmando
+// certificados en medio.
+- (void)sondaDeIntermediario:(NSMutableArray *)lineas completado:(void (^)(void))completado {
+    NSMutableURLRequest *peticion = [NSMutableURLRequest requestWithURL:
+        [NSURL URLWithString:@"https://self-signed.badssl.com/"]];
+    peticion.timeoutInterval = 15.0;
+    [[[NSURLSession sharedSession] dataTaskWithRequest:peticion
+        completionHandler:^(NSData *datos, NSURLResponse *respuesta, NSError *error) {
+        (void)datos;
+        NSString *resumen;
+        if (!error) {
+            resumen = [NSString stringWithFormat:
+                @"HTTP %ld -- LO HA ACEPTADO: hay un intermediario firmando certificados",
+                (long)([(NSHTTPURLResponse *)respuesta statusCode])];
+        } else if ([error.domain isEqualToString:NSURLErrorDomain] && error.code == -1202) {
+            resumen = @"rechazado por certificado no confiable -- bien (sin intermediario)";
+        } else {
+            resumen = [NSString stringWithFormat:@"no se pudo probar: %@",
+                       error.localizedDescription];
+        }
+        [lineas addObject:[NSString stringWithFormat:@"pagina con certificado falso: %@", resumen]];
+        dispatch_async(dispatch_get_main_queue(), ^{ completado(); });
+    }] resume];
+}
+
+// El proxy del sistema (Ajustes -> Wi-Fi -> Proxy).  Si hay uno, explica muchas
+// cosas: iOS no hace HTTP/2 a traves de un proxy HTTP normal.
+- (void)sondaDeProxy:(NSMutableArray *)lineas completado:(void (^)(void))completado {
+    CFDictionaryRef ajustes = CFNetworkCopySystemProxySettings();
+    NSDictionary *dic = ajustes ? CFBridgingRelease(ajustes) : nil;
+    NSMutableArray *trozos = [NSMutableArray array];
+    for (NSString *clave in @[ @"HTTPEnable", @"HTTPProxy", @"HTTPPort",
+                               @"HTTPSEnable", @"HTTPSProxy", @"HTTPSPort",
+                               @"SOCKSEnable", @"SOCKSProxy", @"SOCKSProxy",
+                               @"ProxyAutoConfigEnable", @"ProxyAutoConfigURLString" ]) {
+        id valor = dic[clave];
+        if (valor) [trozos addObject:[NSString stringWithFormat:@"%@=%@", clave, valor]];
+    }
+    [lineas addObject:[NSString stringWithFormat:@"proxy del sistema: %@",
+                       trozos.count ? [trozos componentsJoinedByString:@" "] : @"ninguno"]];
+    completado();
+}
+
 // Hace la busqueda paso a paso y devuelve un informe de texto.  Es lo que
 // contesta Ajustes -> Probar la busqueda.  Lo primero que prueba es la busqueda
 // de verdad, para que salga arriba y no haya que desplazar la pantalla.
@@ -539,11 +641,20 @@ static NSError *TTError(TTCodigoError codigo, NSString *texto) {
         msAntes.length > 8 ? [NSString stringWithFormat:@" (%@...)", [msAntes substringToIndex:8]] : @""]];
 
     [ses prepararIdentidad:^(BOOL lograda) {
+        [lineas addObject:[NSString stringWithFormat:@"sistema: %@",
+                           [NSProcessInfo processInfo].operatingSystemVersionString]];
         [lineas addObject:[NSString stringWithFormat:@"identidad: %@ (ttwid %@)  msToken: %lu car.",
                            lograda ? @"lograda" : @"NO",
                            [[TTSesion compartida] hayIdentidad] ? @"si" : @"NO",
                            (unsigned long)[[TTSesion compartida] msToken].length]];
 
+        // Primero lo que explica el fallo (protocolo, certificado, proxy), y
+        // despues la busqueda, para que todo salga en el mismo orden en que se
+        // lee: de la causa al sintoma.
+        [self ecoDeProtocolo:lineas completado:^{
+        [self sondaDeCertificado:lineas completado:^{
+        [self sondaDeIntermediario:lineas completado:^{
+        [self sondaDeProxy:lineas completado:^{
         [self sonda:@"busqueda(20)" ruta:@"/api/search/general/full/"
                pares:[self paresDeBusqueda:limpia] lineas:lineas completado:^{
         [self sonda:@"feed(16)" ruta:@"/api/recommend/item_list/"
@@ -552,11 +663,30 @@ static NSError *TTError(TTCodigoError codigo, NSString *texto) {
         [self sonda:@"feed+busqueda(20)" ruta:@"/api/recommend/item_list/"
                pares:[self paresDeFeedConCursor:@"0" conLosDeBusqueda:YES]
               lineas:lineas completado:^{
-        [self ecoDeProtocolo:lineas completado:^{
         [self sondaDeRelay:lineas completado:^{
+            [self rematarInforme:lineas];
             completado([lineas componentsJoinedByString:@"\n"]);
-        }]; }]; }]; }]; }];
+        }]; }]; }]; }]; }]; }]; }]; }];
     }];
+}
+
+// Pone delante lo que se deduce de todo el informe.  Es lo primero que se lee
+// (y lo primero que se pega), asi que va en una linea y sin adornos.
+- (void)rematarInforme:(NSMutableArray *)lineas {
+    NSString *todo = [lineas componentsJoinedByString:@"\n"];
+    NSString *veredicto;
+    if ([todo rangeOfString:@"certificado falso: HTTP"].location != NSNotFound) {
+        veredicto = @"Hay un intermediario (proxy, VPN o bloqueador) firmando los "
+                    @"certificados: la busqueda no puede funcionar hasta quitarlo.";
+    } else if ([todo rangeOfString:@"eco de protocolo: http=http/1.1"].location != NSNotFound) {
+        veredicto = @"El telefono va por HTTP/1.1: la busqueda necesita HTTP/2, por "
+                    @"eso devuelve vacio (el feed funciona igual por las dos).";
+    } else if ([todo rangeOfString:@"eco de protocolo: http=http/2"].location != NSNotFound) {
+        veredicto = @"El telefono si habla HTTP/2; si la busqueda falla, es otra cosa.";
+    } else {
+        veredicto = @"No se pudo medir el protocolo.";
+    }
+    [lineas insertObject:[NSString stringWithFormat:@"VEREDICTO: %@", veredicto] atIndex:0];
 }
 
 #pragma mark - Detalle
@@ -670,6 +800,52 @@ static NSCache *TTCacheImagenes(void) {
         }
     }
     return error.localizedDescription ?: @"Error desconocido";
+}
+
+@end
+
+#pragma mark - Certificados
+
+// Se pone de delegado de una sesion de usar y tirar solo para mirar la cadena de
+// certificados que presenta el servidor.  Deja lo que ve en 'apuntes' y deja que
+// la evaluacion siga su curso de siempre.
+@implementation TTCertificados
+
+- (void)URLSession:(NSURLSession *)sesion
+didReceiveChallenge:(NSURLAuthenticationChallenge *)reto
+ completionHandler:(void (^)(NSURLSessionAuthChallengeDisposition, NSURLCredential *))terminar {
+    (void)sesion;
+    if ([reto.protectionSpace.authenticationMethod isEqualToString:NSURLAuthenticationMethodServerTrust]
+        && reto.protectionSpace.serverTrust) {
+        SecTrustRef confianza = reto.protectionSpace.serverTrust;
+        CFIndex cuantos = SecTrustGetCertificateCount(confianza);
+        [self.apuntes addObject:[NSString stringWithFormat:@"  %ld certificados en la cadena",
+                                 (long)cuantos]];
+        for (CFIndex i = 0; i < cuantos; i++) {
+            SecCertificateRef visto = SecTrustGetCertificateAtIndex(confianza, i);
+            NSString *asunto = visto ? CFBridgingRelease(SecCertificateCopySubjectSummary(visto)) : nil;
+            [self.apuntes addObject:[NSString stringWithFormat:@"    [%ld] %@",
+                                     (long)i, asunto.length ? asunto : @"(sin nombre)"]];
+        }
+        if (cuantos > 0) {
+            SecCertificateRef hoja = SecTrustGetCertificateAtIndex(confianza, 0);
+            NSData *der = hoja ? CFBridgingRelease(SecCertificateCopyData(hoja)) : nil;
+            if (der.length) {
+                // Huella casera (FNV-1a de 64 bits): no hace falta criptografia
+                // de verdad, solo poder decir si es el mismo certificado que se
+                // ve desde un ordenador.
+                uint64_t huella = 14695981039346656037ULL;
+                const unsigned char *bytes = der.bytes;
+                for (NSUInteger i = 0; i < der.length; i++) {
+                    huella ^= bytes[i];
+                    huella *= 1099511628211ULL;
+                }
+                [self.apuntes addObject:[NSString stringWithFormat:@"    huella de la hoja: %016llx",
+                                         huella]];
+            }
+        }
+    }
+    terminar(NSURLSessionAuthChallengePerformDefaultHandling, nil);
 }
 
 @end
