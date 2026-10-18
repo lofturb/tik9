@@ -91,7 +91,9 @@
          cellForRowAtIndexPath:(NSIndexPath *)ruta {
     if (ruta.section == 0) {
         if (ruta.row == 0) {
-            return [self celdaValorConTitulo:@"Modo" detalle:[self tituloDelModo:tabla]];
+            return [self celdaValorConTitulo:@"Modo"
+                                     detalle:[self tituloDelModo:tabla]
+                                        tabla:tabla];
         }
         if (ruta.row == 1) {
             NSString *base = [TTResolvedor relayBase];
