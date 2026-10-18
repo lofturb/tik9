@@ -10,10 +10,11 @@
 #import "TTPlayer.h"
 #import "TTTheme.h"
 #import "TTFavoritos.h"
+#import "TTBusquedaViewController.h"
 #import <QuartzCore/QuartzCore.h>
 #import <math.h>
 
-@interface TTFeedViewController () <UITableViewDataSource, UITableViewDelegate>
+@interface TTFeedViewController () <UITableViewDataSource, UITableViewDelegate, TTBusquedaDelegado>
 @end
 
 @implementation TTFeedViewController {
@@ -21,6 +22,7 @@
     UIView *_barraSuperior;
     UILabel *_tituloBarra;
     UIButton *_botonSonido;
+    UIButton *_botonBuscar;   // la lupa, arriba a la derecha
 
     NSMutableArray *_videos;
     NSMutableSet *_ids;
@@ -141,6 +143,14 @@
     [_botonSonido addTarget:self action:@selector(alternarSonido)
            forControlEvents:UIControlEventTouchUpInside];
     [_barraSuperior addSubview:_botonSonido];
+
+    // La lupa, arriba a la derecha, como en la app oficial.
+    _botonBuscar = [UIButton buttonWithType:UIButtonTypeCustom];
+    _botonBuscar.tintColor = [UIColor whiteColor];
+    [_botonBuscar setImage:[TTTheme icono:@"buscar" lado:26] forState:UIControlStateNormal];
+    [_botonBuscar addTarget:self action:@selector(abrirBusqueda)
+           forControlEvents:UIControlEventTouchUpInside];
+    [_barraSuperior addSubview:_botonBuscar];
 }
 
 - (void)montarAviso {
@@ -173,6 +183,42 @@
     [self actualizarIconoSonido];
 }
 
+#pragma mark - Buscar (la lupa)
+
+- (void)abrirBusqueda {
+    TTBusquedaViewController *busqueda = [[TTBusquedaViewController alloc] init];
+    busqueda.delegado = self;
+    busqueda.videos = _videos;
+    UINavigationController *marco =
+        [[UINavigationController alloc] initWithRootViewController:busqueda];
+    [self presentViewController:marco animated:YES completion:nil];
+}
+
+// Lo llama la pantalla de busqueda cuando el usuario elige un video.
+- (void)busquedaElegirVideo:(TTVideo *)video {
+    NSInteger fila = (NSInteger)[_videos indexOfObject:video];
+    if (fila == NSNotFound) {
+        // No estaba en el feed (seria un resultado de verdad de TikTok): se mete
+        // arriba del todo y se salta a el.
+        [_videos insertObject:video atIndex:0];
+        if (video.identificador.length) [_ids addObject:video.identificador];
+        fila = 0;
+        [_tabla reloadData];
+    }
+    NSInteger destino = fila;
+    __weak TTFeedViewController *deb = self;
+    [self dismissViewControllerAnimated:YES completion:^{
+        TTFeedViewController *yo = deb;
+        if (!yo) return;
+        if (yo->_altoCelda > 0.0) {
+            [yo->_tabla setContentOffset:CGPointMake(0.0, (CGFloat)destino * yo->_altoCelda)
+                                animated:NO];
+        }
+        yo->_indiceEnReproduccion = -1;
+        [yo ponerAlDia];
+    }];
+}
+
 #pragma mark - Disposicion
 
 - (void)viewDidLayoutSubviews {
@@ -183,7 +229,8 @@
 
     _barraSuperior.frame = CGRectMake(0, 0, ancho, 76.0);
     _tituloBarra.frame = CGRectMake(18.0, 34.0, 160.0, 22.0);
-    _botonSonido.frame = CGRectMake(ancho - 54.0, 30.0, 40.0, 30.0);
+    _botonBuscar.frame = CGRectMake(ancho - 50.0, 28.0, 40.0, 34.0);
+    _botonSonido.frame = CGRectMake(ancho - 94.0, 30.0, 40.0, 30.0);
 
     _aviso.frame = CGRectMake(30.0, alto / 2.0 - 60.0, ancho - 60.0, 70.0);
     _reintentar.frame = CGRectMake(30.0, alto / 2.0 + 16.0, ancho - 60.0, 34.0);
@@ -356,6 +403,18 @@
         [yo engancharCapaAlIndice:indice];
         [p reproducir];
     }];
+
+    [self precargarDesde:indice];
+}
+
+// Adelanta la resolucion de los dos videos siguientes.  Lo que cuesta cerca de
+// un segundo es el salto 302 por www.tiktok.com, y se hace mientras se ve el
+// video actual: al deslizar, la direccion ya esta lista y sale casi al momento.
+- (void)precargarDesde:(NSInteger)indice {
+    for (NSInteger i = indice + 1; i <= indice + 2; i++) {
+        if (i < 0 || i >= (NSInteger)_videos.count) break;
+        [[TTResolvedor compartido] prepararVideo:_videos[(NSUInteger)i]];
+    }
 }
 
 #pragma mark - UITableView

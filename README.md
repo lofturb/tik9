@@ -86,13 +86,50 @@ Cero desenfoques y cero animaciones caras: todo eso funciona mal en un chip A5.
 El único degradado de la app es el sombreado del pie de texto, para que se lea
 sobre cualquier imagen.
 
+Las publicaciones de **solo fotos** (el «modo foto» de TikTok) **se saltan**: no
+traen dirección de reproducción porque no son vídeos, y antes hacían que de vez
+en cuando saliera una tarjeta que no se podía reproducir.
+
+### Sin esperas al deslizar
+
+Al empezar un vídeo, la app **resuelve por adelantado los dos siguientes** y
+guarda en una caché corta (10 minutos) las direcciones ya resueltas. Medido:
+
+| Paso | Tiempo |
+|---|---|
+| Resolver la dirección firmada → CDN (salto 302 por `www.tiktok.com`) | **~1,0–1,2 s** |
+| Pedir el vídeo ya resuelto, directo al CDN | **~0,3 s** |
+
+Ese ~1 s era el pequeño retardo al cambiar de vídeo. Adelantándolo, deslizar sale
+casi al momento. Si vuelves a un vídeo ya visto, va directo de la caché.
+
+### La lupa, arriba a la derecha
+
+Como en la app oficial, el feed lleva una **lupa** en la esquina superior derecha.
+TikTok **no** da la búsqueda global a los clientes que no son la app oficial (está
+medido y documentado en `HALLAZGOS.md`), así que la lupa **no finge**: hace lo que
+sí se puede con datos reales.
+
+* **Sugerencias de verdad** mientras escribes: salen de tus **búsquedas
+  recientes** (guardadas solo en el teléfono) y de los **retos** (hashtags) y
+  **autores** de los vídeos que ya tienes cargados en el feed.
+* **Búsqueda dentro del feed cargado**: escribe algo y aparecen los vídeos que lo
+  mencionan (en la descripción, en los retos o en el autor). Tocar uno **salta a
+  él** en el feed.
+* Si no hay ninguna coincidencia, lo dice claro y recuerda por qué.
+* Botón **Vaciar** para borrar las búsquedas recientes.
+
 ### Lo que TikTok no da sin ser la app oficial
 
 TikTok **cierra la puerta a los clientes que no son la aplicación oficial**. No
 es cosa de Tik9: es cómo están montados sus servicios hoy.
 
 * **Buscar** devuelve respuestas vacías para quien no trae la firma de la app
-  oficial. Por eso **no hay pestaña de búsqueda**.
+  oficial: `api/search/general/full/` contesta 200 con el cuerpo vacío y la
+  cabecera `tt_orcas_res: 1`, y las rutas de sugerencias contestan
+  `{"status_code":0,"status_msg":"url doesn't match"}`. La app **sí** tiene la
+  lupa (ver *La lupa*, más arriba), pero busca **dentro de los vídeos que ya
+  tienes** en lugar de fingir una búsqueda global.
 * **Comentarios** lo mismo. El botón existe para no dejar un hueco raro, pero
   al tocarlo lo explica sin rodeos en lugar de fingir.
 * **Perfiles** tampoco se sirven. No hay pantalla de perfil.
@@ -397,7 +434,9 @@ En el dispositivo, pon en Ajustes la IP **de tu PC en la red local**
 | El vídeo no se reproduce aunque el feed sí | Prueba a activar el **relay** en Ajustes (modo *Solo relay*): es el caso de iOS 9 sin las raíces instaladas. |
 | La app no se instala / «no está firmada» | Falta **AppSync Unified** (ver Parte C). |
 | La app se ve con barras negras arriba y abajo | Faltan imágenes de arranque; se generan con `tools/generar_recursos.py` (el CI ya lo hace). |
-| **Buscar** no existe en la app | Es a propósito: TikTok devuelve vacío a los clientes que no son la app oficial. |
+| La **lupa** no encuentra cosas de todo TikTok | Es a propósito y está medido: TikTok devuelve vacío a los clientes que no son la app oficial. La lupa busca dentro de los vídeos que ya tienes cargados (ver *La lupa*). |
+| Antes salía algún vídeo «sin dirección de reproducción» | Eran publicaciones de **solo fotos**. Ya se saltan: no son vídeos y no traen dirección. |
+| Al deslizar se notaba un pequeño retardo | El vídeo siguiente ya se resuelve **por adelantado** (~1 s de salto 302 que ahora se hace mientras ves el actual). Si sigue notándose, es la red o el CDN. |
 | Los comentarios no se abren | Igual: están bloqueados para clientes no oficiales. El botón lo explica. |
 | El modo relay da «No se puede conectar» | PC apagado, IP distinta, o el firewall de Windows bloquea Python. |
 
@@ -423,7 +462,8 @@ En el dispositivo, pon en Ajustes la IP **de tu PC en la red local**
 │   ├── TTResolvedor.{h,m}            Reproducción directa (relay como plan B)
 │   ├── TTPlayer.{h,m}                AVPlayer compartido y su capa
 │   ├── TTVideoCell.{h,m}             Tarjeta de vídeo a pantalla completa
-│   ├── TTFeedViewController.{h,m}    Feed «Para ti» (paginado, vertical)
+│   ├── TTFeedViewController.{h,m}    Feed «Para ti» (paginado, vertical, con la lupa)
+│   ├── TTBusquedaViewController.{h,m}  Lupa: sugerencias y búsqueda en el feed
 │   ├── TTFavoritos.{h,m}             Guardado en el teléfono
 │   ├── TTFavoritosViewController.{h,m}  Lista + reproductor de un favorito
 │   ├── TTAjustesViewController.{h,m} Ajustes, tema y diagnóstico

@@ -41,6 +41,7 @@ Portado de `f2` y ejecutado desde este PC (`prototipo/probar.py`):
 | `api/item/detail/` | **200, 26 KB, `itemInfo.itemStruct` completo** ✔ |
 | `api/recommend/item_list/` («Para ti») | **200, 261 KB, 12 vídeos** ✔ |
 | `api/search/general/full/` | vacío, cabecera `tt_orcas_res: 1` (marcado) ✘ |
+| `api/search/suggest/` (y `suggest_clean`, `suggest_words`, `general/suggest`, `word/suggest`, `suggestion`) | 200, 108 B, `{"status_code":0,"status_msg":"url doesn't match"}` ✘ |
 | `api/post/item_list/` (perfil) | vacío ✘ |
 | `api/comment/list/` | vacío ✘ |
 
@@ -110,6 +111,7 @@ prototipo/
   probar_sesion.py      Flujo con cookie jar
   probar_cookies.py     Intenta obtener msToken por HTTP puro
   probar_flujo.py       Flujo completo explore -> item/detail -> CDN
+  diagnostico.py        Analiza el feed (fotos sin URL) y prueba búsqueda/sugerencias
   dump_url.py           Guarda las URLs en urls.json
   urls.json             Ultimas URLs obtenidas (caducan)
   movil/
@@ -176,6 +178,37 @@ al reproductor la **dirección final del CDN** con sus cabeceras, para que
 
 ---
 
+## 4 quater. Dos medidas que cambiaron la app
+
+**a) El retardo al cambiar de vídeo estaba en el salto 302.** Medido en vivo
+(`prototipo/diagnostico.py`), por vídeo:
+
+| Paso | Tiempo |
+|---|---|
+| Resolver: `Range: bytes=0-0` a la dirección firmada y seguir el 302 | **~1,0–1,2 s** |
+| Pedir el mismo vídeo ya en el CDN (`v19-web-newkey`) | **~0,26–0,31 s** |
+
+Lo caro es el salto por `www.tiktok.com`. La app **ya no lo espera al deslizar**:
+al empezar un vídeo resuelve por adelantado los dos siguientes
+(`TTResolvedor prepararVideo:`) y guarda las direcciones **10 minutos** en una
+caché. Así, llegar a un vídeo precargado cuesta solo el ~0,3 s del CDN, y volver
+a uno ya visto es inmediato.
+
+**b) Los vídeos «sin dirección de reproducción» eran publicaciones de fotos.**
+De los 12 elementos del feed analizado, **2 no traían ninguna URL de vídeo**, y en
+los dos el motivo era el mismo: **`imagePost`** (el «modo foto»), con `images` y
+**sin nodo `video`**. No son vídeos, así que ahora se **saltan** al leer el feed
+(`TTCliente feedParaTiCursor:`) en vez de aparecer como tarjeta que no reproduce.
+
+**c) La búsqueda no se puede abrir, y no es cosa de la firma.** Las rutas de
+sugerencias (probadas **seis** variantes de ruta) contestan todas
+`{"status_code":0,"status_msg":"url doesn't match"}`, y la página HTML
+`/search?q=…` es un armazón de JavaScript sin ningún dato de vídeos incrustado.
+La API **móvil** tampoco: `/aweme/v1/…` con X-Gorgon devuelve vacío porque hoy
+hacen falta además `X-Argus` y `X-Ladon` (ver 2.5).
+
+---
+
 ## 5. Estado de la decisión
 
 * **Navegar (feed, miniaturas, ficha de vídeo en el feed):** resuelto y
@@ -188,4 +221,7 @@ al reproductor la **dirección final del CDN** con sus cabeceras, para que
   iOS 9, o red que corta la conexión). No firma nada: la app le pasa la
   dirección ya firmada.
 * **Buscar, comentarios, perfiles:** bloqueados por TikTok para clientes que no
-  son la app oficial (respuestas vacías). No se incluyen, y la app lo explica.
+  son la app oficial (respuestas vacías). La app **sí** trae la lupa (para
+  parecerse a la oficial), pero **no finge**: sugiere con retos, autores e
+  historial local y busca **dentro del feed ya cargado**. Los comentarios se
+  quedan fuera; el botón lo explica.

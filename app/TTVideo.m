@@ -251,4 +251,8 @@ static NSArray *TTUrlsH264(NSDictionary *video) {
     return self.urlsDirectas.count ? self.urlsDirectas[0] : nil;
 }
 
+- (BOOL)tieneVideo {
+    return self.urlsDirectas.count > 0;
+}
+
 @end

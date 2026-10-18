@@ -153,7 +153,14 @@ static NSError *TTError(TTCodigoError codigo, NSString *texto) {
     [self pedirRuta:@"/api/recommend/item_list/" pares:pares completado:^(NSDictionary *json, NSError *error) {
         if (error) { completado(nil, nil, NO, error); return; }
         NSArray *items = json[@"itemList"];
-        NSArray *videos = [TTVideo listDesdeItemList:items];
+        NSArray *todos = [TTVideo listDesdeItemList:items];
+        // El feed mezcla videos con publicaciones de solo fotos (imagePost), que
+        // NO traen direccion de reproduccion.  Se descartan aqui mismo: asi el
+        // feed nunca muestra una tarjeta que no se puede reproducir.
+        NSMutableArray *videos = [NSMutableArray arrayWithCapacity:todos.count];
+        for (TTVideo *v in todos) {
+            if ([v tieneVideo]) [videos addObject:v];
+        }
         NSString *siguiente = [json[@"cursor"] isKindOfClass:[NSString class]] ? json[@"cursor"] : nil;
         if (!siguiente && [json[@"cursor"] isKindOfClass:[NSNumber class]]) {
             siguiente = [(NSNumber *)json[@"cursor"] stringValue];

@@ -36,6 +36,7 @@ Tik9_FILES = \
 	TTPlayer.m \
 	TTVideoCell.m \
 	TTFeedViewController.m \
+	TTBusquedaViewController.m \
 	TTAjustesViewController.m \
 	TTSignaCore.c
 

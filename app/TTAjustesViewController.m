@@ -174,6 +174,7 @@
         [a addAction:[UIAlertAction actionWithTitle:titulo style:UIAlertActionStyleDefault
             handler:^(UIAlertAction *accion) {
             [TTResolvedor guardarModo:clave];
+            [[TTResolvedor compartido] vaciarCache];
             [self->_tabla reloadData];
         }]];
     };
@@ -209,6 +210,7 @@
     [a addAction:[UIAlertAction actionWithTitle:@"Guardar" style:UIAlertActionStyleDefault
         handler:^(UIAlertAction *accion) {
         [TTResolvedor guardarRelay:a.textFields[0].text token:a.textFields[1].text];
+        [[TTResolvedor compartido] vaciarCache];
         [self->_tabla reloadData];
     }]];
     [self presentViewController:a animated:YES completion:nil];

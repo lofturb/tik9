@@ -41,6 +41,12 @@
 // La mejor candidata (o nil).  Es la que se manda al relay si hace falta.
 - (NSString *)mejorUrlDirecta;
 
+// SI o NO: el elemento trae alguna direccion de video.  Las publicaciones de
+// SOLO FOTOS (el "modo foto" de TikTok, el nodo imagePost) no traen ninguna, y
+// por eso salian sin direccion de reproduccion: no son videos.  La app las
+// salta en vez de ofrecerlas.
+- (BOOL)tieneVideo;
+
 + (instancetype)desdeItemStruct:(NSDictionary *)item;
 + (NSArray *)listDesdeItemList:(NSArray *)items;
 

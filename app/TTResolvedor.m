@@ -23,7 +23,27 @@ static void TTResponder(void (^completado)(NSDictionary *, NSError *),
     dispatch_async(dispatch_get_main_queue(), ^{ completado(resultado, error); });
 }
 
+// Cuanto dura una direccion ya resuelta antes de volver a pedirla.  La direccion
+// del CDN lleva dentro su propio token de caducidad (horas), asi que diez
+// minutos es prudente y suficiente para ir y volver por el feed.
+static const NSTimeInterval TTCacheSegundos = 600.0;
+static const NSUInteger TTCacheMaximo = 60;
+
+@interface TTResolvedor ()
+@property (nonatomic, strong) NSMutableDictionary *cache;     // id -> resultado
+@property (nonatomic, strong) NSMutableDictionary *enCurso;   // id -> cola de bloques
+@end
+
 @implementation TTResolvedor
+
+- (instancetype)init {
+    self = [super init];
+    if (self) {
+        _cache = [NSMutableDictionary dictionary];
+        _enCurso = [NSMutableDictionary dictionary];
+    }
+    return self;
+}
 
 + (instancetype)compartido {
     static TTResolvedor *una = nil;
@@ -237,10 +257,105 @@ static void TTResponder(void (^completado)(NSDictionary *, NSError *),
     }];
 }
 
+#pragma mark - Cache y precarga
+
+// Clave del video: el identificador y, si no lo hubiera, la direccion firmada.
+- (NSString *)claveDe:(TTVideo *)video {
+    if (video.identificador.length) return video.identificador;
+    return [video mejorUrlDirecta] ?: @"";
+}
+
+- (NSDictionary *)resultadoCacheadoPara:(NSString *)clave {
+    if (clave.length == 0) return nil;
+    NSDictionary *entrada = self.cache[clave];
+    if (![entrada isKindOfClass:[NSDictionary class]]) return nil;
+    NSDate *fecha = entrada[@"fecha"];
+    // timeIntervalSinceNow es positivo cuando la fecha ya quedo atras.
+    if (![fecha isKindOfClass:[NSDate class]] || -[fecha timeIntervalSinceNow] > TTCacheSegundos) {
+        [self.cache removeObjectForKey:clave];
+        return nil;
+    }
+    NSDictionary *guardado = entrada[@"resultado"];
+    return [guardado isKindOfClass:[NSDictionary class]] ? guardado : nil;
+}
+
+- (void)guardar:(NSDictionary *)resultado para:(NSString *)clave {
+    if (clave.length == 0 || ![resultado isKindOfClass:[NSDictionary class]]) return;
+    if (self.cache.count >= TTCacheMaximo) {
+        NSMutableArray *fuera = [NSMutableArray array];
+        for (NSString *k in self.cache) {
+            NSDictionary *e = self.cache[k];
+            NSDate *f = [e isKindOfClass:[NSDictionary class]] ? e[@"fecha"] : nil;
+            if (![f isKindOfClass:[NSDate class]] || -[f timeIntervalSinceNow] > TTCacheSegundos) {
+                [fuera addObject:k];
+            }
+        }
+        if (fuera.count) [self.cache removeObjectsForKeys:fuera];
+    }
+    self.cache[clave] = @{ @"fecha": [NSDate date], @"resultado": resultado };
+}
+
+- (void)vaciarCache {
+    [self.cache removeAllObjects];
+}
+
+- (void)prepararVideo:(TTVideo *)video {
+    if (!video) return;
+    NSString *clave = [self claveDe:video];
+    if (clave.length == 0) return;
+    if ([self resultadoCacheadoPara:clave]) return;   // ya esta
+    if (self.enCurso[clave]) return;                  // ya se esta pidiendo
+    // A quien llama no le interesa el resultado: queda guardado en la cache.
+    [self resolverVideo:video completado:^(NSDictionary *resultado, NSError *error) {
+        (void)resultado;
+        (void)error;
+    }];
+}
+
 #pragma mark - Entrada
 
 - (void)resolverVideo:(TTVideo *)video
            completado:(void (^)(NSDictionary *, NSError *))completado {
+    if (!video) {
+        TTResponder(completado, nil, [self error:@"No hay video que resolver"]);
+        return;
+    }
+    NSString *clave = [self claveDe:video];
+
+    // 1) Resuelta hace poco: se contesta al momento.  Esto es lo que hace que
+    //    ir y volver por el feed (o llegar a un video precargado) sea inmediato.
+    NSDictionary *guardado = [self resultadoCacheadoPara:clave];
+    if (guardado) { TTResponder(completado, guardado, nil); return; }
+
+    // 2) El mismo video ya se esta resolviendo (la precarga del feed y el
+    //    usuario llegando a el a la vez): se apunta a la cola, y cuando llegue
+    //    el resultado se avisa a todos.  Una sola peticion para todos.
+    NSMutableArray *esperando = self.enCurso[clave];
+    if (esperando) {
+        if (completado) [esperando addObject:[completado copy]];
+        return;
+    }
+    NSMutableArray *cola = [NSMutableArray array];
+    if (completado) [cola addObject:[completado copy]];
+    self.enCurso[clave] = cola;
+
+    __weak TTResolvedor *deb = self;
+    [self resolverDeVerdad:video completado:^(NSDictionary *resultado, NSError *error) {
+        TTResolvedor *yo = deb;
+        if (!yo) return;
+        NSArray *pendientes = yo.enCurso[clave];
+        [yo.enCurso removeObjectForKey:clave];
+        if (resultado) [yo guardar:resultado para:clave];
+        for (id nodo in pendientes) {
+            void (^bloque)(NSDictionary *, NSError *) = (void (^)(NSDictionary *, NSError *))nodo;
+            TTResponder(bloque, resultado, error);
+        }
+    }];
+}
+
+// El motor de verdad: directo y, solo si falla, el relay.  Sin cache ni colas.
+- (void)resolverDeVerdad:(TTVideo *)video
+              completado:(void (^)(NSDictionary *, NSError *))completado {
     NSString *modo = [TTResolvedor modo];
     BOOL hayRelay = [TTResolvedor hayRelay];
 

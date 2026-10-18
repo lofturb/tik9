@@ -37,6 +37,16 @@
 - (void)resolverVideo:(TTVideo *)video
            completado:(void (^)(NSDictionary *resultado, NSError *error))completado;
 
+// Deja resuelta la direccion del video en segundo plano y sin avisar a nadie.
+// La app lo usa para adelantar los siguientes videos del feed: resolver cuesta
+// cerca de un segundo (es un salto 302 por www.tiktok.com) y, al adelantarlo,
+// deslizar al video siguiente ya sale casi al instante.  Si ya estaba resuelta
+// (o se esta resolviendo), no hace nada.
+- (void)prepararVideo:(TTVideo *)video;
+
+// Tira la cache de direcciones resueltas (al cambiar de motor o de relay).
+- (void)vaciarCache;
+
 // Prueba el relay configurado (para el boton de Ajustes).
 - (void)probarRelay:(void (^)(NSString *informe, BOOL correcto))completado;
 
