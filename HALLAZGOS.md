@@ -219,11 +219,75 @@ la página `/search?q=…` es un armazón de JavaScript sin ningún dato de víd
 incrustado. La API **móvil** tampoco: `/aweme/v1/…` con X-Gorgon devuelve vacío
 porque hacen falta además `X-Argus` y `X-Ladon` (ver 2.5).
 
-**Conclusión:** no son las cookies, ni el X-Bogus, ni los parámetros. Lo único que
-separa esta petición de la del navegador es **el `msToken` que genera su
-JavaScript** (y el resto de la huella del SDK). Por eso la app **pide de verdad**
-la búsqueda y aprovecha la sesión si se le da (`Ajustes → Cookies`); abrirla del
-todo exigiría ejecutar el SDK dentro de la app.
+**Conclusión:** (corregida el 2026-10-19; ver **4 quinquies**) se descartaron las
+cookies, el X-Bogus y los parámetros, pero el experimento **no podía acertar**: los
+parámetros del «juego completo» eran **inventados** (medidos en otra captura) y todas
+las pruebas salían por **HTTP/1.1** de Python, que es justo lo que la ruta rechaza.
+
+---
+
+## 4 quinquies. **La búsqueda sí responde** (medido el 2026-10-19)
+
+La conclusión de 4 quater (c) era falsa. Se volvió a medir **capturando la petición
+real del navegador** (`prototipo/busqueda_navegador.json`: UA, cookies, los 38
+parámetros de negocio tal cual, y los cuatro valores firmados) y repitiéndola con
+nuestra propia firma. Lo que separaba a la app de los resultados **no era la firma**:
+
+| Prueba | Resultado |
+|---|---|
+| Reenviar **la firma exacta del navegador** desde Python | `200`, **0 B**, `tt_orcas_res: 1` |
+| Nuestra firma sobre los **mismos 38 parámetros** | `200`, **0 B**, `tt_orcas_res: 1` |
+| … con `ub_code`/`SCM_VERSION`/`WebGL`/canvas/`DEVICE_HASH` **actualizados** a los del navegador | `200`, **0 B**, `tt_orcas_res: 1` |
+| … con la **huella TLS y HTTP/2 de Chrome** (`curl_cffi impersonate`) | `200`, **273–320 KB**, `status_code: 0`, 12–13 vídeos |
+| … con **HTTP/2 genérico** (curl normal, sin imitar a nadie) | `200`, **320 KB**, 13 vídeos |
+| … con HTTP/2 de Chrome pero **forzando HTTP/1.1** | `200`, **0 B**, `tt_orcas_res: 1` |
+| … con **HTTP/1.1** y todas las cabeceras de Chrome, en su orden | `200`, **0 B**, `tt_orcas_res: 1` |
+
+De ahí salen **las tres condiciones reales** (y las tres las cumple la app sola):
+
+1. **HTTP/2 obligatorio.** Es lo único que cambia entre la fila que funciona (320 KB)
+   y las dos que devuelven vacío con las mismas cabeceras y la misma firma.
+   `NSURLSession` ya negocia HTTP/2 (desde iOS 9), así que en el teléfono viene dado.
+2. **Cookie `ttwid` (identidad anónima).** Se consigue **sin cuenta** cargando una
+   página pública (`/foryou`, `/explore`, `/search?q=…`; la portada no la da).
+   Sin ella la respuesta deja de ser vacía y pasa a ser
+   `{"status_code":2483,"status_msg":"Por favor, inicia sesión primero"}` (127 B):
+   otra vez idéntico a lo que ve el navegador anónimo… porque el navegador **la tiene**.
+3. **`msToken` válido dentro de la firma.** Sin él, `200` + **0 B** + `tt_orcas_res: 1`;
+   con él (el de la propia sesión, o el que TikTok **regala en la cabecera
+   `x-ms-token`** de una respuesta rechazada), 300 KB de resultados. No hace falta
+   ejecutar el SDK: el token lo da el servidor y se firma con él.
+
+Comprobaciones que cierran el caso:
+
+* **La firma ya era correcta.** Al abrir con `unseal()` el `X-Dynosaur`/`X-Gnarly`
+  capturados del navegador y compararlos campo a campo
+  (`prototipo/comparar_con_navegador.py`): `hash_state` de la consulta y del UA
+  **coinciden exactamente**; las únicas diferencias son valores de entorno
+  (`ub_code` 8→14, `SCM_VERSION` 2.0.0.561→1.0.0.417, WebGL/canvas/`DEVICE_HASH`
+  reales, `PAGE` `/search`), y **ninguno de ellos decide nada**: con los valores
+  viejos también devuelve resultados.
+* **La huella TLS no importa.** Basta HTTP/2 *genérico*: no hace falta imitar a
+  ningún navegador, así que el TLS de Apple sirve.
+* **Los parámetros tampoco.** Funciona igual el juego de 38 del navegador, uno de
+  26, y el de 21 que ya mandaba la app (`prototipo/params_app.py`).
+
+**Lo que hace ahora la app** (`TTSesion`, `TTCliente`):
+
+* `prepararIdentidad:` carga **una vez** `https://www.tiktok.com/foryou` y deja que
+  el sistema guarde `ttwid`/`tt_chain_token`; `cookieDeSesion` manda además cualquier
+  cookie pegada a mano en Ajustes (que sigue siendo posible, ya sin ser necesaria).
+* `buscarPalabra:` firma con el `msToken` que haya y, si la respuesta viene vacía o
+  con `2483`, guarda el `x-ms-token` que venga en la respuesta —o vuelve a pedir la
+  identidad— y **repite la búsqueda una vez**. En el primer arranque, sin nada, eso
+  es: pedir identidad → primera búsqueda vacía que regala el token → segunda búsqueda
+  con resultados.
+* El mismo camino se comprobó con el **UA literal de la app** y sus parámetros
+  (`prototipo/confianza_app.py`): 273 KB y 12 vídeos.
+
+Reproducir: `pip install "curl_cffi<0.8"` y luego
+`python prototipo/receta_final.py` (receta completa) y
+`python prototipo/confianza_app.py` (lo que hará la app).
 
 ---
 
@@ -238,8 +302,9 @@ todo exigiría ejecutar el SDK dentro de la app.
 * **Relay:** **opcional**, solo como plan B (certificado del CDN no confiado en
   iOS 9, o red que corta la conexión). No firma nada: la app le pasa la
   dirección ya firmada.
-* **Buscar, comentarios, perfiles:** bloqueados por TikTok para clientes que no
-  son la app oficial (respuestas vacías). La app **sí** trae la lupa (para
-  parecerse a la oficial), pero **no finge**: sugiere con retos, autores e
-  historial local y busca **dentro del feed ya cargado**. Los comentarios se
-  quedan fuera; el botón lo explica.
+* **Buscar:** resuelto y autónomo (2026-10-19). Necesita HTTP/2, la cookie
+  `ttwid` (identidad anónima, de una página pública) y un `msToken` válido; la app
+  consigue las tres sola. Ver **4 quinquies**.
+* **Comentarios y perfiles:** pendientes. Se sabe que la API móvil exige
+  `X-Argus`/`X-Ladon` (ver 2.5); no se han vuelto a medir sobre HTTP/2. Los
+  comentarios se quedan fuera por ahora; el botón lo explica.

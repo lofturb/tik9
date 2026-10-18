@@ -105,9 +105,13 @@
     }
     if (ruta.section == 1) {
         if (ruta.row == 0) {
-            BOOL hay = [[TTSesion compartida] hayCookies];
-            NSString *ms = [[TTSesion compartida] msToken];
-            NSString *detalle = hay ? (ms.length ? @"con msToken" : @"pegada") : @"vacia";
+            BOOL identidad = [[TTSesion compartida] hayIdentidad];
+            BOOL pegadas  = [[TTSesion compartida] hayCookies];
+            NSString *ms  = [[TTSesion compartida] msToken];
+            // La app ya consigue su propia identidad anonima; pegar cookies
+            // sigue siendo posible pero deja de ser necesario.
+            NSString *detalle = identidad ? (ms.length ? @"propias, con msToken" : @"propias")
+                                          : (pegadas ? @"pegada a mano" : @"se piden solas");
             return [self celdaValorConTitulo:@"Cookies de TikTok" detalle:detalle tabla:tabla];
         }
         if (ruta.row == 1) {
@@ -229,10 +233,10 @@
 - (void)editarCookies {
     UIAlertController *a = [UIAlertController
         alertControllerWithTitle:@"Cookies de TikTok"
-                         message:@"Opcional.  La reproduccion directa ya funciona sin "
-                                  "cookies (el CDN solo pide el Referer).  Solo hacen "
-                                  "falta si quieres pedir el feed con tu propia sesion "
-                                  "de www.tiktok.com."
+                         message:@"Opcional.  La app ya consigue su propia identidad "
+                                  "anonima (ttwid) y su msToken para el feed y la busqueda.  "
+                                  "Pegar aqui cookies de www.tiktok.com solo sirve si quieres "
+                                  "usar tu propia sesion de navegador."
                   preferredStyle:UIAlertControllerStyleAlert];
     [a addTextFieldWithConfigurationHandler:^(UITextField *campo) {
         campo.placeholder = @"msToken=...; ttwid=...";

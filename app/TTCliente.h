@@ -22,10 +22,10 @@ typedef void (^TTBloqueFeed)(NSArray *videos, NSString *cursor, BOOL hayMas, NSE
 // Feed "Para ti" (api/recommend/item_list).  cursor nil = primera pagina.
 - (void)feedParaTiCursor:(NSString *)cursor completado:(TTBloqueFeed)completado;
 
-// Busqueda real (api/search/general/full).  OJO: TikTok la cierra a quien no
-// lleve la sesion de un navegador; contesta 200 con el CUERPO VACIO (y la
-// cabecera tt_orcas_res: 1), que aqui llega como error.  Se deja puesta de todas
-// formas: si algun dia la sesion (msToken) la abre, los resultados ya se pintan.
+// Busqueda real (api/search/general/full).  La app consigue por su cuenta lo
+// que la ruta exige: la cookie ttwid (identidad anonima, de una pagina publica)
+// y un msToken valido (se aprende del que TikTok regala en la cabecera
+// x-ms-token cuando rechaza una peticion).  Ver HALLAZGOS.md, 4 quinquies.
 - (void)buscarPalabra:(NSString *)palabra completado:(TTBloqueFeed)completado;
 
 // Ficha de un video concreto (api/item/detail).  Puede venir vacia: TikTok ya

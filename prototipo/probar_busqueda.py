@@ -2,6 +2,14 @@
 """
 probar_busqueda.py -- intenta abrir la busqueda de TikTok sin ser la app oficial.
 
+CORREGIDO EL 2026-10-19 (ver HALLAZGOS.md, 4 quinquies): este experimento no
+podia acertar.  El "juego completo de parametros" de la prueba C era INVENTADO
+(medido en otra captura) y todas las peticiones salian por HTTP/1.1, que es justo
+lo que la ruta rechaza.  La busqueda SI funciona; la receta esta en
+probar_busqueda_navegador.py, receta_final.py y confianza_app.py.
+
+Se deja el archivo como registro del primer intento.
+
 En el navegador la busqueda funciona SIN iniciar sesion.  La diferencia entre el
 navegador y esta peticion solo puede estar en una de estas tres cosas, y aqui se
 prueban por separado para no quedarse en "no se puede":

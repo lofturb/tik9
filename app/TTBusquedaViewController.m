@@ -1,25 +1,26 @@
 // TTBusquedaViewController.m -- la pantalla de la lupa (el icono de arriba a la
 // derecha, como en la app oficial).
 //
-// QUE SE MIDIO (ver HALLAZGOS.md, seccion 4 quater):
+// QUE SE MIDIO (ver HALLAZGOS.md, seccion 4 quinquies):
 //
-//   * La busqueda de TikTok se pide a /api/search/general/full/ y **esta puesta**:
-//     si la sesion la abre, los resultados se pintan tal cual.
-//   * Hoy contesta 200 con el cuerpo VACIO y la cabecera tt_orcas_res: 1, y se
-//     probaron SEIS combinaciones (cookies reales de /explore, X-Bogus calculado
-//     de verdad, y el juego completo de parametros del navegador): todas igual.
-//     Lo que le falta es lo que calcula el JavaScript del navegador (su msToken),
-//     no la firma ni las cookies.
+//   * La busqueda de TikTok se pide a /api/search/general/full/ y SI responde.
+//     Lo que faltaba no era la firma, que ya era correcta, sino dos cosas:
+//       1. la cookie ttwid (identidad anonima: se consigue cargando una pagina
+//          publica, sin cuenta; sin ella contesta 2483 "inicia sesion");
+//       2. un msToken valido dentro de la firma (TikTok lo regala en la cabecera
+//          x-ms-token de una respuesta rechazada; la app lo aprende y reintenta).
+//     Ademas la ruta exige HTTP/2, que NSURLSession ya usa por su cuenta.
 //   * Las rutas de sugerencias contestan {"status_code":0,"status_msg":"url
 //     doesn't match"} y la pagina /search?q= es un armazon de JavaScript.
 //   * La API movil exige X-Argus + X-Ladon (sin portar).
 //
-// Asi que la pantalla hace dos cosas a la vez, sin fingir ninguna:
+// Asi que la pantalla hace tres cosas, sin fingir ninguna:
 //
 //   1. PIDE de verdad, y si vienen resultados los pinta ("De TikTok").
-//   2. Si no vienen, busca **dentro de los videos ya cargados** y ofrece
-//      **sugerencias reales** (tus busquedas recientes + los retos y autores de
-//      esos videos), y lo explica en vez de dejar la lista vacia.
+//   2. Mientras llegan, busca **dentro de los videos ya cargados**.
+//   3. Ofrece **sugerencias reales** (tus busquedas recientes + los retos y
+//      autores de esos videos) y explica lo que pasa en vez de dejar la lista
+//      vacia.
 #import "TTBusquedaViewController.h"
 #import "TTCliente.h"
 #import "TTTheme.h"
@@ -310,10 +311,9 @@ static const NSUInteger TTSugerenciasMaximo = 8;
         return [NSString stringWithFormat:
             @"Nada que coincida con \u00ab%@\u00bb.\n\n"
              "%@\n\n"
-             "La busqueda global de TikTok solo responde con la sesion de un navegador "
-             "(su msToken). Si la pegas en Ajustes \u2192 Cookies, la app la usara y los "
-             "resultados saldran aqui. Mientras tanto, busca dentro de los videos que ya "
-             "tienes cargados.", t, _avisoTikTok ?: @"TikTok no devolvio resultados."];
+             "TikTok no devolvio resultados (puede que no haya ninguno para ese "
+             "termino). Mientras tanto, aqui tienes lo que coincide entre los videos "
+             "que ya estan cargados.", t, _avisoTikTok ?: @"TikTok no devolvio resultados."];
     }
     return [NSString stringWithFormat:
         @"No hay nada en el feed cargado que coincida con \u00ab%@\u00bb.\n\n"

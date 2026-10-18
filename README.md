@@ -118,46 +118,41 @@ siguiente. Eso era lo que se notaba a tirones. Ahora:
 
 ### La lupa, arriba a la derecha
 
-Como en la app oficial, el feed lleva una **lupa** en la esquina superior derecha.
-TikTok **no** da la búsqueda global a los clientes que no lleven la sesión de un
-navegador, y eso está **medido** (`HALLAZGOS.md`, 4 quater): se probaron **seis**
-combinaciones —cookies reales de `/explore`, el X-Bogus calculado de verdad y el
-juego completo de parámetros del navegador— y **todas** contestan `200` con el
-cuerpo vacío y `tt_orcas_res: 1`. Lo que falta es lo que calcula el JavaScript del
-navegador (su `msToken`), no la firma.
+Como en la app oficial, el feed lleva una **lupa** en la esquina superior derecha, y
+**busca de verdad en todo TikTok**. Costó tres intentos dar con el motivo
+(`HALLAZGOS.md`, 4 quinquies): la firma ya era correcta y las cookies no bastaban.
+Lo que la ruta exige es
 
-Así que la lupa **pregunta de verdad y no finge**:
+1. **HTTP/2** (lo pone `NSURLSession` solo, desde iOS 9),
+2. la cookie **`ttwid`**, que es la identidad **anónima** — se consigue cargando una
+   página pública, **sin cuenta**, y la app lo hace una vez al abrir la lupa, y
+3. un **`msToken` válido** dentro de la firma — y no hay que fabricarlo: TikTok lo
+   **regala** en la cabecera `x-ms-token` de una respuesta rechazada, así que la app
+   pregunta, lo aprende y repite la búsqueda.
 
-* **Pregunta a TikTok** al pulsar Buscar: si algún día responde, los resultados
-  salen en la sección **«De TikTok»** y al tocar uno se abre en el feed.
-* **Sugerencias de verdad** mientras escribes: salen de tus **búsquedas
-  recientes** (guardadas solo en el teléfono) y de los **retos** (hashtags) y
-  **autores** de los vídeos que ya tienes cargados en el feed.
-* **Búsqueda dentro del feed cargado**: escribe algo y aparecen los vídeos que lo
-  mencionan (en la descripción, en los retos o en el autor). Tocar uno **salta a
-  él** en el feed.
-* Si no hay ninguna coincidencia, lo dice claro y recuerda por qué.
+La pantalla, entonces, muestra:
+
+* **«De TikTok»**: los resultados reales (hasta 12 por página), con portada, autor
+  y descripción. Tocar uno lo abre en el feed.
+* **Sugerencias de verdad** mientras escribes: de tus **búsquedas recientes**
+  (guardadas solo en el teléfono) y de los **retos** (hashtags) y **autores** de los
+  vídeos que ya tienes cargados.
+* **Búsqueda dentro del feed cargado**: si TikTok no devuelve nada (o falla la red),
+  aparecen los vídeos ya cargados que mencionan el término. Tocar uno **salta a él**.
 * Botón **Vaciar** para borrar las búsquedas recientes.
 
-> **Truco, si quieres probarlo tú:** en el navegador del PC, entra en TikTok, mira
-> la cookie **`msToken`** (Herramientas de desarrollo → Aplicación → Cookies) y
-> pégala en **Ajustes → Cookies** de la app. La app la usará al firmar y la lupa
-> preguntará con esa sesión. Si así salen resultados, se puede automatizar; si no,
-> es que hace falta ejecutar el SDK entero (el «proyecto de investigación» de
-> `HALLAZGOS.md`). **Contesta si lo pruebas y te digo por dónde seguir.**
+> **Ya no hace falta pegar cookies.** La app consigue la identidad y el `msToken`
+> sola. **Ajustes → Cookies** sigue ahí por si quieres usar *tu* sesión de navegador,
+> pero es opcional.
 
 ### Lo que TikTok no da sin ser la app oficial
 
 TikTok **cierra la puerta a los clientes que no son la aplicación oficial**. No
 es cosa de Tik9: es cómo están montados sus servicios hoy.
 
-* **Buscar** devuelve respuestas vacías para quien no trae la firma de la app
-  oficial: `api/search/general/full/` contesta 200 con el cuerpo vacío y la
-  cabecera `tt_orcas_res: 1`, y las rutas de sugerencias contestan
-  `{"status_code":0,"status_msg":"url doesn't match"}`. La app **sí** tiene la
-  lupa (ver *La lupa*, más arriba), pero busca **dentro de los vídeos que ya
-  tienes** en lugar de fingir una búsqueda global.
-* **Comentarios** lo mismo. El botón existe para no dejar un hueco raro, pero
+* **Buscar** sí funciona (ver *La lupa*). Lo que sigue cerrado son las rutas de
+  **sugerencias** de la web (`{"status_code":0,"status_msg":"url doesn't match"}`).
+* **Comentarios** no se sirven. El botón existe para no dejar un hueco raro, pero
   al tocarlo lo explica sin rodeos en lugar de fingir.
 * **Perfiles** tampoco se sirven. No hay pantalla de perfil.
 * El **feed** y los **vídeos** sí funcionan, y es en lo que se centra la app.
@@ -389,10 +384,11 @@ en el certificado del CDN de TikTok o si tu red corta esa conexión.
 
 ### Cookies y sesión (opcional)
 
-**Ajustes → Cookies de TikTok.** La reproducción directa **ya funciona sin
-cookies** (el CDN sólo pide el `Referer`). Las cookies sólo hacen falta si
-quieres pedir el feed con tu propia sesión de `www.tiktok.com`. Se pegan como
-texto (`msToken=…; ttwid=…`).
+**Ajustes → Cookies de TikTok.** Ya **no hace falta**: la app consigue sola su
+identidad anónima (`ttwid`) y su `msToken` para el feed y la búsqueda. La
+reproducción directa también funciona sin nada de eso (el CDN sólo pide el
+`Referer`). Se pega texto (`msToken=…; ttwid=…`) sólo si quieres usar *tu* sesión
+de `www.tiktok.com`.
 
 **Ajustes → Olvidar dispositivo y cookies** borra el identificador de
 dispositivo y las cookies: TikTok te verá como un teléfono nuevo.
@@ -460,7 +456,7 @@ En el dispositivo, pon en Ajustes la IP **de tu PC en la red local**
 | Un vídeo concreto no carga | La app **reintenta sola tres veces** (pidiendo una dirección nueva) antes de avisar. Si sale el aviso, toca **Reintentar** en la tarjeta: algunos vídeos están retirados o restringidos por región. |
 | Salió **«no se pudo reproducir»** una vez | Es un tropiezo de red, no un vídeo roto: la app ya reintenta sola y solo avisa si falla tres veces seguidas. Si le pasa a **varios seguidos**, activa el relay en Ajustes. |
 | Al deslizar se notaba un pequeño retardo | El vídeo siguiente ya se resuelve **por adelantado** (~1 s de salto 302 que ahora se hace mientras ves el actual) y el cambio de vídeo ocurre **cuando sueltas**, no a mitad del arrastre. |
-| Escribo en la lupa y no salen resultados de todo TikTok | Es lo que TikTok permite: su búsqueda exige la sesión de un navegador (`msToken`). La app la pide de todas formas, y si le pegas tu `msToken` en **Ajustes → Cookies** puede que sí responda (ver *La lupa*). |
+| Escribo en la lupa y no salen resultados de todo TikTok | Si la red va bien, TikTok devuelve hasta 12. Si sale vacío, puede que no haya nada para ese término. Revisa la conexión; la app ya pide la identidad y el `msToken` por su cuenta (ver *La lupa*). |
 | La app no se instala / «no está firmada» | Falta **AppSync Unified** (ver Parte C). |
 | La app se ve con barras negras arriba y abajo | Faltan imágenes de arranque; se generan con `tools/generar_recursos.py` (el CI ya lo hace). |
 | Antes salía algún vídeo «sin dirección de reproducción» | Eran publicaciones de **solo fotos**. Ya se saltan: no son vídeos y no traen dirección. |
@@ -485,13 +481,13 @@ En el dispositivo, pon en Ajustes la IP **de tu PC en la red local**
 │   ├── TTSignaCore.{c,h}             Firma web de TikTok (X-Gnarly) en C puro
 │   ├── TTTheme.{h,m}                 Paleta, estilos planos e iconos vectoriales
 │   ├── TTVideo.{h,m}                 Modelo de un vídeo (lee el itemStruct)
-│   ├── TTSesion.{h,m}                device_id, msToken y cookies
-│   ├── TTCliente.{h,m}               Feed firmado + carga de imágenes
+│   ├── TTSesion.{h,m}                device_id, identidad anónima, msToken y cookies
+│   ├── TTCliente.{h,m}               Feed y búsqueda firmados + carga de imágenes
 │   ├── TTResolvedor.{h,m}            Reproducción directa (relay como plan B)
 │   ├── TTPlayer.{h,m}                AVPlayer compartido y su capa
 │   ├── TTVideoCell.{h,m}             Tarjeta de vídeo a pantalla completa
 │   ├── TTFeedViewController.{h,m}    Feed «Para ti» (paginado, vertical, con la lupa)
-│   ├── TTBusquedaViewController.{h,m}  Lupa: sugerencias y búsqueda en el feed
+│   ├── TTBusquedaViewController.{h,m}  Lupa: resultados reales + sugerencias
 │   ├── TTFavoritos.{h,m}             Guardado en el teléfono
 │   ├── TTFavoritosViewController.{h,m}  Lista + reproductor de un favorito
 │   ├── TTAjustesViewController.{h,m} Ajustes, tema y diagnóstico
@@ -504,6 +500,10 @@ En el dispositivo, pon en Ajustes la IP **de tu PC en la red local**
 ├── prototipo/                        Comprobaciones en vivo (Python) y oráculo
 │   ├── xgnarly.py                    Firma X-Gnarly de referencia (Python)
 │   ├── comparar_vectores.py          Compara el C contra el oráculo
+│   ├── comparar_con_navegador.py     Abre la firma capturada y la compara campo a campo
+│   ├── busqueda_navegador.json       La petición de búsqueda real, capturada del navegador
+│   ├── receta_final.py / confianza_app.py  Reproduce la receta de la búsqueda
+│   ├── http2_variantes.py            Mide que la ruta exige HTTP/2
 │   ├── probar_play.py / probar_final.py / probar_cabeceras_cdn.py
 │   ├── inspeccionar_play.py          Muestra la dirección firmada del feed
 │   └── probar_relay.py               Prueba el relay

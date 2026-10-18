@@ -32,3 +32,6 @@ app/pruebas/*.exe
 
 # Volcado del feed que deja el diagnostico (pesa y cambia en cada pasada)
 prototipo/feed_crudo.json
+
+# Respuesta de busqueda que guardan los prototipos (pesa y cambia en cada pasada)
+prototipo/search_respuesta.json
