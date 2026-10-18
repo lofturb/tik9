@@ -71,20 +71,40 @@ jobs:
           fi
           ls -d "$THEOS/sdks/"*.sdk
 
-      # En el SDK 9.3, libSystem.B.tbd re-exporta /usr/lib/system/liblaunch.dylib
-      # pero ese .tbd nunca se genero (incidencia theos/sdks#10). Sin el, el
-      # enlazador falla con "ld: file not found: /usr/lib/system/liblaunch.dylib".
-      # El SDK 10.3 si lo incluye y los simbolos son los mismos, asi que lo copiamos.
-      - name: Parchear liblaunch.tbd que falta en el SDK 9.3
+      # El SDK 9.3 trae dos huecos que se tapan copiando el .tbd equivalente del
+      # SDK 10.3 (mismo "install-name", mismos simbolos):
+      #
+      #   1. libSystem.B.tbd re-exporta /usr/lib/system/liblaunch.dylib, pero ese
+      #      .tbd nunca se genero (incidencia theos/sdks#10). Sin el, el enlazador
+      #      falla con "ld: file not found: /usr/lib/system/liblaunch.dylib".
+      #
+      #   2. libsystem_c.tbd no declara los simbolos de memoria (_memcpy, _memset,
+      #      _memmove, _bzero): solo trae los internos "__platform_mem*" y los
+      #      "___memcpy_chk".  Cualquier codigo C que use memcpy/memset (como el
+      #      firmador TTSignaCore.c) falla al enlazar con
+      #      "Undefined symbols: _memcpy / _memset".  El .tbd del 10.3 si los trae.
+      - name: Parchear los .tbd que faltan en el SDK 9.3
         run: |
           set -euo pipefail
-          DESTINO="$THEOS/sdks/iPhoneOS9.3.sdk/usr/lib/system/liblaunch.tbd"
-          if [ ! -f "$DESTINO" ]; then
-            curl -fsSL --retry 3 -o "$DESTINO" \
-              "https://raw.githubusercontent.com/theos/sdks/master/iPhoneOS10.3.sdk/usr/lib/system/liblaunch.tbd"
+          SDK="$THEOS/sdks/iPhoneOS9.3.sdk"
+          REF="https://raw.githubusercontent.com/theos/sdks/master/iPhoneOS10.3.sdk"
+
+          LAUNCH="$SDK/usr/lib/system/liblaunch.tbd"
+          if [ ! -s "$LAUNCH" ]; then
+            curl -fsSL --retry 3 -o "$LAUNCH" "$REF/usr/lib/system/liblaunch.tbd"
+            echo "copiado: liblaunch.tbd"
           fi
-          echo "--- liblaunch.tbd (parche) ---"
-          head -n 6 "$DESTINO"
+
+          MEMORIA="$SDK/usr/lib/system/libsystem_c.tbd"
+          if [ -f "$MEMORIA" ] && ! grep -qE '[^A-Za-z0-9_]_memcpy[^A-Za-z0-9_]' "$MEMORIA"; then
+            curl -fsSL --retry 3 -o "$MEMORIA" "$REF/usr/lib/system/libsystem_c.tbd"
+            echo "copiado: libsystem_c.tbd (faltaban _memcpy/_memset)"
+          fi
+
+          echo "--- liblaunch.tbd ---"
+          head -n 4 "$LAUNCH"
+          echo "--- libsystem_c.tbd: simbolos de memoria declarados ---"
+          grep -oE '[^A-Za-z0-9_]_(memcpy|memset|memmove|bzero)[^A-Za-z0-9_]' "$MEMORIA" | sort -u
 
       - name: Generar iconos e imagenes de arranque
         run: |
