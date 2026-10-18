@@ -289,11 +289,17 @@ Dos formas de pasarlo, de más cómoda a más manual:
 **1. Por la red local, sin cables ni correo (recomendada).** Hay una **página de
 ayuda** que reúne los dos ficheros (el perfil y el `.ipa`) y se sirve desde la
 **raíz del repositorio**. Copia el `.ipa` que descargaste a `entrega/Tik9.ipa` y
-levanta el servidor:
+levanta el servidor de la casa:
 
 ```powershell
-python -m http.server 80
+python tools\servidor_instalador.py
 ```
+
+Es el servidor de ficheros de siempre (`http.server`) con un buzón de más: la
+página lleva una **caja para pegar el informe del diagnóstico** (el de
+**Ajustes → Probar la búsqueda → Copiar** en la app) y un botón para enviarlo.
+Lo que llegue se guarda en `entrega/informes.txt`, así que el informe pasa del
+móvil al PC sin copiarlo a mano (también se puede mirar en `http://<ip>/informes`).
 
 Averigua la IP del PC con `ipconfig` (por ejemplo `192.168.1.50`) y abre esa
 dirección **a secas** en **Safari del dispositivo**:
@@ -302,9 +308,10 @@ dirección **a secas** en **Safari del dispositivo**:
 http://192.168.1.50/
 ```
 
-Sale la página con los dos pasos en orden: **1) los certificados** y
-**2) la aplicación**. (La página, `index.html`, lleva la IP del PC dentro, así
-que **no se sube al repositorio**: el `.gitignore` la deja fuera.)
+Sale la página con los dos pasos en orden —**1) los certificados** y
+**2) la aplicación**— y, abajo, la caja del informe. (La página, `index.html`,
+lleva la IP del PC dentro, así que **no se sube al repositorio**: el `.gitignore`
+la deja fuera.)
 
 Si prefieres servir solo el perfil, sigue valiendo lo de siempre:
 
@@ -404,6 +411,14 @@ dispositivo y las cookies: TikTok te verá como un teléfono nuevo.
 **Ajustes → Probar el feed** recorre la conexión y dice, con el error real, si
 algo falla (red, DNS, certificados o firma). **Ajustes → Probar el relay**
 comprueba el servidor opcional.
+
+Los informes de esas pruebas —y el de **Ajustes → Probar la búsqueda**— salen en
+una ventana propia de **texto seleccionable** con un botón **Copiar**: así se
+pueden pegar enteros en la caja de la página del instalador (ver *Instalar en el
+dispositivo*), que es la vía cómoda para que el diagnóstico llegue al PC sin
+teclearlo. El de la búsqueda empieza por `VEREDICTO:` y luego cuenta el sistema,
+el proxy, el protocolo negociado, los certificados y, por último, la búsqueda, el
+feed y el relay.
 
 ### Tema y color
 
@@ -520,6 +535,7 @@ En el dispositivo, pon en Ajustes la IP **de tu PC en la red local**
 └── tools/
     ├── generar_recursos.py           Genera iconos y arranques (PNG a mano)
     ├── generar_certificados.py       Genera el perfil .mobileconfig
+    ├── servidor_instalador.py        Sirve la página y recoge el informe pegado
     └── verificar_ipa.py              Comprueba arquitectura y versión del .ipa
 ```
 

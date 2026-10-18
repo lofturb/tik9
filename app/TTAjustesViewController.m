@@ -6,6 +6,13 @@
 #import "TTResolvedor.h"
 #import "TTFavoritos.h"
 
+// Ventana para leer (y copiar) un informe largo.  El aviso normal de iOS no deja
+// seleccionar el texto, y estos informes se pegan en el ordenador para
+// diagnosticar: de ahi el boton de copiar.  La implementacion esta al final.
+@interface TTInformeViewController : UIViewController
+- (instancetype)initConInforme:(NSString *)informe titulo:(NSString *)titulo;
+@end
+
 @interface TTAjustesViewController () <UITableViewDataSource, UITableViewDelegate>
 @end
 
@@ -228,7 +235,8 @@
     [self mostrarEspera:@"Probando el relay..."];
     [[TTResolvedor compartido] probarRelay:^(NSString *informe, BOOL correcto) {
         [self ocultarEspera];
-        [self mostrarAlerta:correcto ? @"Relay" : @"El relay no responde" texto:informe];
+        [self mostrarInforme:informe
+                      titulo:correcto ? @"Relay" : @"El relay no responde"];
     }];
 }
 
@@ -267,8 +275,8 @@
     [self mostrarEspera:@"Consultando el feed..."];
     [[TTCliente compartido] probarConexion:^(NSString *informe, BOOL correcto) {
         [self ocultarEspera];
-        [self mostrarAlerta:correcto ? @"El feed funciona" : @"No se pudo cargar el feed"
-                      texto:informe];
+        [self mostrarInforme:informe
+                      titulo:correcto ? @"El feed funciona" : @"No se pudo cargar el feed"];
     }];
 }
 
@@ -297,7 +305,7 @@
         [[TTCliente compartido] informeDeBusqueda:palabra
             completado:^(NSString *informe) {
             [self ocultarEspera];
-            [self mostrarAlerta:@"Busqueda" texto:informe];
+            [self mostrarInforme:informe titulo:@"Diagnostico de la busqueda"];
         }];
     }]];
     [self presentViewController:a animated:YES completion:nil];
@@ -383,6 +391,16 @@
     [self presentViewController:a animated:YES completion:nil];
 }
 
+// Los informes del diagnostico son largos y hay que poder copiarlos enteros, asi
+// que van en su propia ventana en lugar del aviso de siempre.
+- (void)mostrarInforme:(NSString *)informe titulo:(NSString *)titulo {
+    TTInformeViewController *vista = [[TTInformeViewController alloc]
+        initConInforme:informe titulo:titulo];
+    UINavigationController *marco = [[UINavigationController alloc]
+        initWithRootViewController:vista];
+    [self presentViewController:marco animated:YES completion:nil];
+}
+
 - (void)mostrarEspera:(NSString *)texto {
     if (_espera) return;
     _espera = [UIAlertController alertControllerWithTitle:nil message:texto
@@ -394,6 +412,61 @@
     if (!_espera) return;
     [_espera dismissViewControllerAnimated:YES completion:nil];
     _espera = nil;
+}
+
+@end
+
+#pragma mark - Informe
+
+// Ventana de solo lectura con el informe del diagnostico.  El texto se puede
+// seleccionar a mano, y el boton de la izquierda lo copia entero de una vez:
+// eso es lo que hace falta para pegarlo en la pagina del ordenador.
+@implementation TTInformeViewController {
+    UITextView *_texto;
+    NSString *_informe;
+    NSString *_titulo;
+}
+
+- (instancetype)initConInforme:(NSString *)informe titulo:(NSString *)titulo {
+    self = [super initWithNibName:nil bundle:nil];
+    if (self) {
+        _informe = [informe copy];
+        _titulo = [titulo copy];
+    }
+    return self;
+}
+
+- (void)viewDidLoad {
+    [super viewDidLoad];
+    self.title = _titulo.length ? _titulo : @"Informe";
+    self.view.backgroundColor = [UIColor whiteColor];
+
+    _texto = [[UITextView alloc] initWithFrame:self.view.bounds];
+    _texto.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+    _texto.editable = NO;
+    _texto.selectable = YES;
+    _texto.alwaysBounceVertical = YES;
+    _texto.textContainerInset = UIEdgeInsetsMake(12, 10, 12, 10);
+    UIFont *letra = [UIFont fontWithName:@"Courier" size:12];
+    _texto.font = letra ? letra : [UIFont systemFontOfSize:12];
+    _texto.text = _informe;
+    [self.view addSubview:_texto];
+
+    self.navigationItem.leftBarButtonItem = [[UIBarButtonItem alloc]
+        initWithTitle:@"Copiar" style:UIBarButtonItemStylePlain
+               target:self action:@selector(copiar)];
+    self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc]
+        initWithBarButtonSystemItem:UIBarButtonSystemItemDone
+                             target:self action:@selector(cerrar)];
+}
+
+- (void)copiar {
+    [UIPasteboard generalPasteboard].string = _informe;
+    self.navigationItem.leftBarButtonItem.title = @"Copiado";
+}
+
+- (void)cerrar {
+    [self dismissViewControllerAnimated:YES completion:nil];
 }
 
 @end
