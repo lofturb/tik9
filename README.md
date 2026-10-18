@@ -221,16 +221,34 @@ y **el repositorio ya trae el perfil hecho**:
 
 Dos formas de pasarlo, de más cómoda a más manual:
 
-**1. Por la red local, sin cables ni correo (recomendada).** En el PC, dentro de
-la carpeta del repositorio:
+**1. Por la red local, sin cables ni correo (recomendada).** Hay una **página de
+ayuda** que reúne los dos ficheros (el perfil y el `.ipa`) y se sirve desde la
+**raíz del repositorio**. Copia el `.ipa` que descargaste a `entrega/Tik9.ipa` y
+levanta el servidor:
+
+```powershell
+python -m http.server 80
+```
+
+Averigua la IP del PC con `ipconfig` (por ejemplo `192.168.1.50`) y abre esa
+dirección **a secas** en **Safari del dispositivo**:
+
+```
+http://192.168.1.50/
+```
+
+Sale la página con los dos pasos en orden: **1) los certificados** y
+**2) la aplicación**. (La página, `index.html`, lleva la IP del PC dentro, así
+que **no se sube al repositorio**: el `.gitignore` la deja fuera.)
+
+Si prefieres servir solo el perfil, sigue valiendo lo de siempre:
 
 ```powershell
 cd certificados
 python -m http.server 8000
 ```
 
-Averigua la IP del PC con `ipconfig` (por ejemplo `192.168.1.50`) y abre en
-**Safari del dispositivo**:
+y en Safari:
 
 ```
 http://192.168.1.50:8000/CertificadosModernos.mobileconfig
@@ -238,6 +256,11 @@ http://192.168.1.50:8000/CertificadosModernos.mobileconfig
 
 Es HTTP plano dentro de tu propia red, así que funciona aunque el dispositivo no
 confíe todavía en ningún certificado.
+
+> **Si el dispositivo no abre la página**, casi siempre es el **firewall de
+> Windows**: la primera vez pregunta si permites a Python en la red; hay que
+> decir que **sí** para redes **privadas**. Y el PC y el dispositivo tienen que
+> estar en la **misma red Wi-Fi**.
 
 **2. Por correo.** Adjunta el `.mobileconfig` en un correo a ti mismo y ábrelo
 desde la app Mail del dispositivo.
