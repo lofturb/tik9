@@ -1,0 +1,12 @@
+# El codigo se compila en Linux (GitHub Actions), asi que todo el texto
+# debe guardarse con saltos de linea LF, sin importar la configuracion
+# de Git en Windows (core.autocrlf).
+* text=auto eol=lf
+
+# Binarios que no se deben tocar
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.ipa binary
+*.deb binary
+*.mobileconfig binary

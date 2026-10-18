@@ -1,0 +1,31 @@
+# Artefactos de compilacion de Theos
+app/.theos/
+app/obj/
+app/packages/
+app/*.deb
+app/*.ipa
+.theos/
+packages/
+
+# Ficheros temporales
+*.log
+*.tmp
+*.bak
+*~
+
+# Sistema
+Thumbs.db
+desktop.ini
+.DS_Store
+
+# IPA descargado para probar en local
+entrega/
+
+# Pagina de ayuda para pasar los ficheros al dispositivo por la red local
+# (lleva la IP de este PC dentro, asi que no se sube al repositorio)
+index.html
+
+# Restos de los prototipos de Python (bytecode y ejecutables de prueba)
+__pycache__/
+*.pyc
+app/pruebas/*.exe

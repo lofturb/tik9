@@ -1,0 +1,20 @@
+Recursos generados por tools/generar_recursos.py
+
+Icon-Small.png  29x29
+Icon-Small@2x.png  58x58
+Icon-Small-40.png  40x40
+Icon-Small-40@2x.png  80x80
+Icon-Small-40@3x.png  120x120
+Icon-60@2x.png  120x120
+Icon-60@3x.png  180x180
+Icon-76.png  76x76
+Icon-76@2x.png  152x152
+iTunesArtwork  512x512
+LaunchImage.png  320x480
+LaunchImage@2x.png  640x960
+LaunchImage-568h@2x.png  640x1136
+LaunchImage-700.png  320x480
+LaunchImage-700@2x.png  640x960
+LaunchImage-700-568h@2x.png  640x1136
+LaunchImage-700-Portrait@2x.png  1536x2048
+LaunchImage-700-Landscape@2x.png  2048x1536

@@ -1,0 +1,150 @@
+name: Construir IPA (iOS 9.3.5 / armv7)
+
+# Se ejecuta al pulsar "Run workflow" o al subir cambios.
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+env:
+  THEOS: ${{ github.workspace }}/theos
+  APP_DIR: app
+  # Toolchain LLVM 11.1.0-L3 de L1ghtmann: el ultimo release estable y el
+  # mas usado para compilar armv7 contra SDK 9.3. Es el que expone
+  # linux/iphone/bin/clang dentro de $THEOS/toolchain.
+  TOOLCHAIN_TAG: test-210562a
+  TOOLCHAIN_ASSET: iOSToolchain-x86_64.tar.xz
+
+permissions:
+  contents: write
+
+jobs:
+  build-ipa:
+    # Ubuntu 22.04 (glibc 2.35) es lo que mejor encaja con el toolchain de
+    # 2023 y ademas todavia tiene libtinfo5, que algunos binarios necesitan.
+    # Los repositorios publicos tienen minutos ilimitados y gratis.
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Descargar el codigo
+        uses: actions/checkout@v4
+
+      - name: Dependencias del sistema
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential fakeroot rsync curl perl zip unzip git \
+            libxml2 xz-utils libz3-dev libtinfo6
+          sudo apt-get install -y libtinfo5 || echo "libtinfo5 no disponible (no es critico)"
+          sudo update-alternatives --set fakeroot /usr/bin/fakeroot-sysv || true
+
+      - name: Cachear Theos (toolchain + SDK)
+        uses: actions/cache@v4
+        with:
+          path: theos
+          key: theos-${{ runner.os }}-${{ env.TOOLCHAIN_TAG }}-sdk9.3-v2
+
+      - name: Instalar Theos + toolchain LLVM (compatible con armv7)
+        run: |
+          set -euo pipefail
+          if [ ! -x "$THEOS/toolchain/linux/iphone/bin/clang" ]; then
+            git clone --recursive --depth 1 https://github.com/theos/theos.git "$THEOS"
+            mkdir -p "$THEOS/toolchain" "$THEOS/sdks"
+            curl -fL --retry 3 -o /tmp/iOSToolchain.tar.xz \
+              "https://github.com/L1ghtmann/llvm-project/releases/download/${TOOLCHAIN_TAG}/${TOOLCHAIN_ASSET}"
+            tar -xJf /tmp/iOSToolchain.tar.xz -C "$THEOS/toolchain/"
+            rm -f /tmp/iOSToolchain.tar.xz
+          fi
+          echo "--- estructura del toolchain ---"
+          ls -d "$THEOS/toolchain/"*/iphone 2>/dev/null || true
+          "$THEOS/toolchain/linux/iphone/bin/clang" --version
+
+      - name: Instalar SDK de iOS 9.3
+        run: |
+          set -euo pipefail
+          if [ ! -d "$THEOS/sdks/iPhoneOS9.3.sdk" ]; then
+            mkdir -p "$THEOS/sdks"
+            git clone --depth 1 --filter=blob:none --sparse \
+              https://github.com/theos/sdks.git /tmp/theos-sdks
+            git -C /tmp/theos-sdks sparse-checkout set iPhoneOS9.3.sdk
+            cp -a /tmp/theos-sdks/iPhoneOS9.3.sdk "$THEOS/sdks/"
+            rm -rf /tmp/theos-sdks
+          fi
+          ls -d "$THEOS/sdks/"*.sdk
+
+      # En el SDK 9.3, libSystem.B.tbd re-exporta /usr/lib/system/liblaunch.dylib
+      # pero ese .tbd nunca se genero (incidencia theos/sdks#10). Sin el, el
+      # enlazador falla con "ld: file not found: /usr/lib/system/liblaunch.dylib".
+      # El SDK 10.3 si lo incluye y los simbolos son los mismos, asi que lo copiamos.
+      - name: Parchear liblaunch.tbd que falta en el SDK 9.3
+        run: |
+          set -euo pipefail
+          DESTINO="$THEOS/sdks/iPhoneOS9.3.sdk/usr/lib/system/liblaunch.tbd"
+          if [ ! -f "$DESTINO" ]; then
+            curl -fsSL --retry 3 -o "$DESTINO" \
+              "https://raw.githubusercontent.com/theos/sdks/master/iPhoneOS10.3.sdk/usr/lib/system/liblaunch.tbd"
+          fi
+          echo "--- liblaunch.tbd (parche) ---"
+          head -n 6 "$DESTINO"
+
+      - name: Generar iconos e imagenes de arranque
+        run: |
+          set -euo pipefail
+          python3 tools/generar_recursos.py
+          ls -la "$APP_DIR/Resources/" | head -n 25
+
+      - name: Compilar la app y empaquetar el .ipa
+        working-directory: ${{ env.APP_DIR }}
+        run: |
+          set -euo pipefail
+          make clean || true
+          make package FINALPACKAGE=1 PACKAGE_FORMAT=ipa
+
+      - name: Verificar que el binario es armv7 para iOS 9
+        run: |
+          set -euo pipefail
+          BIN=$(find "$GITHUB_WORKSPACE/$APP_DIR/.theos" -type f -name 'Tik9' | head -n 1)
+          if [ -z "$BIN" ]; then echo "No se encontro el binario Tik9"; exit 1; fi
+          echo "Binario: $BIN"
+          file "$BIN"
+          "$THEOS/toolchain/linux/iphone/bin/otool" -hv "$BIN" || true
+          echo "--- contenido del paquete ---"
+          ls -la "$GITHUB_WORKSPACE/$APP_DIR/packages/"
+
+      - name: Comprobar la estructura del IPA
+        run: |
+          set -euo pipefail
+          IPA=$(ls "$GITHUB_WORKSPACE/$APP_DIR/packages/"*.ipa | head -n 1)
+          echo "IPA: $IPA"
+          unzip -l "$IPA" | head -n 40
+          unzip -l "$IPA" | grep -q 'Payload/Tik9.app/Tik9' \
+            || { echo "El IPA no contiene el ejecutable esperado"; exit 1; }
+          unzip -l "$IPA" | grep -q 'Payload/Tik9.app/Info.plist' \
+            || { echo "El IPA no contiene Info.plist"; exit 1; }
+
+      - name: Publicar el IPA como artefacto descargable
+        uses: actions/upload-artifact@v4
+        with:
+          name: Tik9-ipa-armv7
+          path: ${{ env.APP_DIR }}/packages/*.ipa
+          if-no-files-found: error
+          retention-days: 90
+
+      # Los artefactos exigen tener sesion iniciada en GitHub. Publicarlo
+      # tambien como Release permite descargarlo desde cualquier navegador,
+      # incluso desde el propio iPhone/iPad.
+      - name: Publicar tambien como Release
+        if: github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          ETIQUETA="build-$(date -u +%Y%m%d-%H%M%S)"
+          # Las notas van en un fichero del repositorio para que el Release se
+          # entienda sin abrir siquiera el README: que es, que trae esta
+          # version, como se instala y los avisos legales. --latest deja este
+          # Release como el mas visible de la pagina.
+          gh release create "$ETIQUETA" ${APP_DIR}/packages/*.ipa \
+            --title "Tik9 para iOS 9.3.5 (32 bits) — $ETIQUETA" \
+            --notes-file .github/notas-release.md \
+            --latest \
+            || echo "No se pudo crear el Release (el IPA sigue en Artefactos)"
