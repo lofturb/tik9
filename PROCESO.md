@@ -123,9 +123,14 @@ cp -a /tmp/theos-sdks/iPhoneOS9.3.sdk "$THEOS/sdks/"
 El `--sparse` importa: el repositorio entero son muchos GB de SDKs y solo
 hacemos falta uno.
 
-### 2.5 **La trampa gorda**: `liblaunch.tbd`
+### 2.5 **Las trampas gordas**: los `.tbd` que el SDK 9.3 no trae
 
-En el SDK 9.3, `libSystem.B.tbd` dice que re-exporta
+El SDK 9.3 tiene **dos huecos** que se tapan copiando el `.tbd` equivalente del
+SDK 10.3 (el nombre de instalación es el mismo y los símbolos también). Los dos
+han hecho perder tiempo de verdad, así que conviene arreglarlos **antes** de
+compilar.
+
+**a) `liblaunch.tbd`.** `libSystem.B.tbd` dice que re-exporta
 `/usr/lib/system/liblaunch.dylib`, pero **ese fichero no se generó nunca**
 (incidencia conocida: `theos/sdks#10`). El enlazador falla con:
 
@@ -133,15 +138,29 @@ En el SDK 9.3, `libSystem.B.tbd` dice que re-exporta
 ld: file not found: /usr/lib/system/liblaunch.dylib
 ```
 
-El SDK 10.3 sí lo trae y los símbolos son idénticos, así que se copia:
+**b) `libsystem_c.tbd`.** No declara los **símbolos públicos de memoria**
+(`_memcpy`, `_memset`, `_memmove`, `_bzero`): solo trae los internos
+(`__platform_mem*`) y los `___memcpy_chk`. Lo destapa **cualquier fichero C**
+que use `memcpy`/`memset` (en Tik9, `TTSignaCore.c`), con:
 
-```bash
-curl -fsSL -o "$THEOS/sdks/iPhoneOS9.3.sdk/usr/lib/system/liblaunch.tbd" \
-  "https://raw.githubusercontent.com/theos/sdks/master/iPhoneOS10.3.sdk/usr/lib/system/liblaunch.tbd"
+```
+Undefined symbols for architecture armv7:
+  "_memcpy", referenced from: ...
+  "_memset", referenced from: ...
 ```
 
-Sin este paso, **nada enlaza** contra el SDK 9.3. Es el error que más tiempo
-hace perder si empiezas de cero.
+Se copian los dos:
+
+```bash
+SDK="$THEOS/sdks/iPhoneOS9.3.sdk"
+REF="https://raw.githubusercontent.com/theos/sdks/master/iPhoneOS10.3.sdk"
+curl -fsSL -o "$SDK/usr/lib/system/liblaunch.tbd"   "$REF/usr/lib/system/liblaunch.tbd"
+curl -fsSL -o "$SDK/usr/lib/system/libsystem_c.tbd" "$REF/usr/lib/system/libsystem_c.tbd"
+```
+
+Sin el paso (a), **nada enlaza** contra el SDK 9.3. Sin el (b), solo enlazan las
+apps de Objective-C puro; en cuanto entre un `.c` con `memcpy`, falla. El
+*workflow* del repositorio aplica los dos solo.
 
 ### 2.6 Generar iconos e imágenes de arranque
 
@@ -285,9 +304,11 @@ git clone --depth 1 --filter=blob:none --sparse https://github.com/theos/sdks.gi
 git -C /tmp/sdks sparse-checkout set iPhoneOS9.3.sdk
 cp -a /tmp/sdks/iPhoneOS9.3.sdk "$THEOS/sdks/"
 
-# 4. el parche de liblaunch
-curl -fsSL -o "$THEOS/sdks/iPhoneOS9.3.sdk/usr/lib/system/liblaunch.tbd" \
-  "https://raw.githubusercontent.com/theos/sdks/master/iPhoneOS10.3.sdk/usr/lib/system/liblaunch.tbd"
+# 4. los parches de .tbd del SDK 9.3 (liblaunch + libsystem_c)
+SDK="$THEOS/sdks/iPhoneOS9.3.sdk"
+REF="https://raw.githubusercontent.com/theos/sdks/master/iPhoneOS10.3.sdk"
+curl -fsSL -o "$SDK/usr/lib/system/liblaunch.tbd"   "$REF/usr/lib/system/liblaunch.tbd"
+curl -fsSL -o "$SDK/usr/lib/system/libsystem_c.tbd" "$REF/usr/lib/system/libsystem_c.tbd"
 
 # 5. compilar
 cd app && make clean && make package FINALPACKAGE=1 PACKAGE_FORMAT=ipa
@@ -368,6 +389,11 @@ cd app && make clean && make package FINALPACKAGE=1 PACKAGE_FORMAT=ipa
 | Error en el log | Qué significa | Arreglo |
 |---|---|---|
 | `ld: file not found: /usr/lib/system/liblaunch.dylib` | Falta el `.tbd` en el SDK 9.3 (`theos/sdks#10`) | Paso 2.5 (copiarlo del SDK 10.3) |
+| `Undefined symbols: _memcpy / _memset` (al enlazar) | El `libsystem_c.tbd` del SDK 9.3 **no declara los símbolos de memoria** (solo los internos `__platform_mem*` y los `___memcpy_chk`); el del SDK 10.3 sí. Lo destapa **cualquier código C** que use `memcpy`/`memset` (p. ej. `TTSignaCore.c`); una app solo-Objective-C puede no toparse con ello nunca | Mismo arreglo que `liblaunch.tbd`: copiar el `libsystem_c.tbd` del SDK 10.3 (el CI ya lo hace solo) |
+| `error: no visible @interface ... declares the selector 'x:y:'` | Se llama a un método con menos parámetros de los que tiene | Pasar todos los parámetros (en Tik9 fue `celdaValorConTitulo:detalle:tabla:`) |
+| `error: dereferencing a __weak pointer is not allowed` (`-Werror`) | Con ARC no se puede acceder a un `ivar` a través de un puntero `__weak` | Asignarlo antes a una variable local fuerte (`MiClase *x = deb;`) dentro del bloque |
+| `error: assigning to 'id<UITableViewDataSource>' from incompatible type` (`-Werror`) | Se asigna `self` a `dataSource`/`delegate` **sin declarar conformidad** con el protocolo | Añadir `@interface MiControlador () <UITableViewDataSource, UITableViewDelegate>` en el `.m` |
+| `error: property 'x' not found on object of type 'UITableView *'` | Se usa una propiedad que **no existe en el SDK 9.3** (p. ej. `contentInsetAdjustmentBehavior`, de iOS 11) | Buscarla por selector en tiempo de ejecución o usar la equivalente antigua (`automaticallyAdjustsScrollViewInsets`) |
 | `fatal error: 'UIKit/UIKit.h' file not found` | El SDK no está donde Theos lo busca | `ls $THEOS/sdks/` → debe haber `iPhoneOS9.3.sdk`; comprobar `TARGET` |
 | `error: unknown argument: '-miphoneos-version-min'` o "no soporta armv7" | Toolchain equivocado (uno arm64) | Usar el de `L1ghtmann/llvm-project`, tag `test-210562a` |
 | `error: no known class method for selector 'player'` | `[AVPlayer player]` se inventó; en iOS 9 no existe | `[[AVPlayer alloc] init]` |

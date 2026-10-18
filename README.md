@@ -432,8 +432,9 @@ Linux (o en Windows con WSL), Theos necesita:
 * Ubuntu 22.04 con `build-essential fakeroot rsync curl perl zip git libtinfo5`
 * El *toolchain* `L1ghtmann/llvm-project` → `test-210562a` → `iOSToolchain-x86_64.tar.xz`,
   descomprimido en `$THEOS/toolchain/` (queda `$THEOS/toolchain/linux/iphone/bin/clang`)
+* Los parches de `.tbd` que faltan en el SDK 9.3 (`liblaunch.tbd` y
+  `libsystem_c.tbd`, con los símbolos de memoria; el workflow los aplica solo)
 * El SDK `iPhoneOS9.3.sdk` del repositorio `theos/sdks`
-* El parche de `liblaunch.tbd` que falta en el SDK 9.3 (el workflow lo aplica solo)
 
 ```bash
 export THEOS=/opt/theos
@@ -442,9 +443,9 @@ make package FINALPACKAGE=1 PACKAGE_FORMAT=ipa
 # → app/packages/com.lofturb.tik9_1.0.0_iphoneos-arm.ipa
 ```
 
-> La guía completa del proceso (herramientas, los comandos de preparación, la
-> trampa de `liblaunch.tbd`, los errores típicos y cómo se publica en Releases)
-> está en **[`PROCESO.md`](PROCESO.md)**.
+> La guía completa del proceso (herramientas, los comandos de preparación, los
+> parches de `.tbd` del SDK 9.3, los errores típicos y cómo se publica en
+> Releases) está en **[`PROCESO.md`](PROCESO.md)**.
 
 ---
 
