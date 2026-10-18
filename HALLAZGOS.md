@@ -112,6 +112,7 @@ prototipo/
   probar_cookies.py     Intenta obtener msToken por HTTP puro
   probar_flujo.py       Flujo completo explore -> item/detail -> CDN
   diagnostico.py        Analiza el feed (fotos sin URL) y prueba búsqueda/sugerencias
+  probar_busqueda.py    Matriz de intentos para abrir la búsqueda (cookies/X-Bogus/params)
   dump_url.py           Guarda las URLs en urls.json
   urls.json             Ultimas URLs obtenidas (caducan)
   movil/
@@ -200,12 +201,29 @@ los dos el motivo era el mismo: **`imagePost`** (el «modo foto»), con `images`
 **sin nodo `video`**. No son vídeos, así que ahora se **saltan** al leer el feed
 (`TTCliente feedParaTiCursor:`) en vez de aparecer como tarjeta que no reproduce.
 
-**c) La búsqueda no se puede abrir, y no es cosa de la firma.** Las rutas de
-sugerencias (probadas **seis** variantes de ruta) contestan todas
-`{"status_code":0,"status_msg":"url doesn't match"}`, y la página HTML
-`/search?q=…` es un armazón de JavaScript sin ningún dato de vídeos incrustado.
-La API **móvil** tampoco: `/aweme/v1/…` con X-Gorgon devuelve vacío porque hoy
-hacen falta además `X-Argus` y `X-Ladon` (ver 2.5).
+**c) La búsqueda no se puede abrir, y no es cosa de la firma.** Probado a fondo
+(`prototipo/probar_busqueda.py`), con la palabra `gatos`:
+
+| Combinación | Resultado |
+|---|---|
+| control (`X-Bogus=1`, sin cookies) | `200`, **0 B**, `tt_orcas_res: 1` |
+| + cookies reales de `/explore` (`ttwid`, `tt_chain_token`) | `200`, **0 B**, `tt_orcas_res: 1` |
+| + **X-Bogus calculado de verdad** (sobre los parámetros) | `200`, **0 B**, `tt_orcas_res: 1` |
+| + X-Bogus real + cookies | `200`, **0 B**, `tt_orcas_res: 1` |
+| + X-Bogus real (sobre `biz`+`X-Dynosaur`+`msToken`) + cookies | `200`, **0 B**, `tt_orcas_res: 1` |
+| + **juego completo** de parámetros del navegador (`webid`, `engine_name`, pantalla, `browser_version`, `search_source`…) + X-Bogus real + cookies | `200`, **0 B**, `tt_orcas_res: 1` |
+
+Lo mismo en `/api/search/item/full/`. Las **seis** variantes de ruta de
+sugerencias contestan todas `{"status_code":0,"status_msg":"url doesn't match"}`, y
+la página `/search?q=…` es un armazón de JavaScript sin ningún dato de vídeos
+incrustado. La API **móvil** tampoco: `/aweme/v1/…` con X-Gorgon devuelve vacío
+porque hacen falta además `X-Argus` y `X-Ladon` (ver 2.5).
+
+**Conclusión:** no son las cookies, ni el X-Bogus, ni los parámetros. Lo único que
+separa esta petición de la del navegador es **el `msToken` que genera su
+JavaScript** (y el resto de la huella del SDK). Por eso la app **pide de verdad**
+la búsqueda y aprovecha la sesión si se le da (`Ajustes → Cookies`); abrirla del
+todo exigiría ejecutar el SDK dentro de la app.
 
 ---
 

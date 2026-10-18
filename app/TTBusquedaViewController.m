@@ -1,37 +1,35 @@
 // TTBusquedaViewController.m -- la pantalla de la lupa (el icono de arriba a la
 // derecha, como en la app oficial).
 //
-// ESTO ESTA MEDIDO EN VIVO (ver HALLAZGOS.md): TikTok NO da busqueda a los
-// clientes que no son la app oficial.
+// QUE SE MIDIO (ver HALLAZGOS.md, seccion 4 quater):
 //
-//   /api/search/general/full/  -> 200 con el cuerpo VACIO y la cabecera
-//                                 tt_orcas_res: 1 (bloqueado).
-//   /api/search/suggest/ (y sus variantes) -> 200 con
-//                                 {"status_code":0,"status_msg":"url doesn't match"}.
-//   La pagina HTML /search?q=... es solo un armazon de JavaScript: no trae
-//   ningun dato de videos incrustado.
+//   * La busqueda de TikTok se pide a /api/search/general/full/ y **esta puesta**:
+//     si la sesion la abre, los resultados se pintan tal cual.
+//   * Hoy contesta 200 con el cuerpo VACIO y la cabecera tt_orcas_res: 1, y se
+//     probaron SEIS combinaciones (cookies reales de /explore, X-Bogus calculado
+//     de verdad, y el juego completo de parametros del navegador): todas igual.
+//     Lo que le falta es lo que calcula el JavaScript del navegador (su msToken),
+//     no la firma ni las cookies.
+//   * Las rutas de sugerencias contestan {"status_code":0,"status_msg":"url
+//     doesn't match"} y la pagina /search?q= es un armazon de JavaScript.
+//   * La API movil exige X-Argus + X-Ladon (sin portar).
 //
-// Asi que esta pantalla hace lo que SI se puede hacer con lo que la app ya
-// tiene, sin inventarse nada:
+// Asi que la pantalla hace dos cosas a la vez, sin fingir ninguna:
 //
-//   * SUGIERE con material real: lo que el usuario ha buscado antes (historial
-//     del propio telefono) y los retos y autores de los videos que ya estan
-//     cargados en el feed.
-//   * BUSCA dentro de esos videos ya cargados (por descripcion, retos y autor).
-//   * Si el termino no aparece en nada, lo dice claro y explica por que.
-//
-// Si algun dia TikTok abre la busqueda, aqui es donde hay que anadir la llamada
-// a /api/search/general/full/ (el resto de la pantalla ya vale tal cual).
+//   1. PIDE de verdad, y si vienen resultados los pinta ("De TikTok").
+//   2. Si no vienen, busca **dentro de los videos ya cargados** y ofrece
+//      **sugerencias reales** (tus busquedas recientes + los retos y autores de
+//      esos videos), y lo explica en vez de dejar la lista vacia.
 #import "TTBusquedaViewController.h"
 #import "TTCliente.h"
 #import "TTTheme.h"
 
 static NSString * const kDefHistorial = @"tik9_busquedas";
-static const NSUInteger TTHistorialMaximo  = 12;
+static const NSUInteger TTHistorialMaximo   = 12;
 static const NSUInteger TTSugerenciasMaximo = 8;
 
-// Celda de resultado: guarda el identificador del video para no pintar una
-// miniatura que ya no toca cuando la celda se reutiliza.
+// Celda de video: guarda el identificador para no pintar una miniatura que ya no
+// toca cuando la celda se reutiliza.
 @interface TTCeldaResultado : UITableViewCell
 @property (nonatomic, copy) NSString *videoId;
 @end
@@ -47,10 +45,14 @@ static const NSUInteger TTSugerenciasMaximo = 8;
 @implementation TTBusquedaViewController {
     UISearchBar *_buscador;
     UITableView *_tabla;
-    NSMutableArray *_sugerencias;   // cadenas
-    NSMutableArray *_resultados;    // TTVideo
+    NSMutableArray *_sugerencias;    // cadenas
+    NSMutableArray *_enElFeed;       // TTVideo que coinciden con el termino
+    NSArray *_deTikTok;              // TTVideo que devolvio TikTok (casi siempre 0)
     NSString *_termino;
+    NSString *_avisoTikTok;          // por que no vinieron resultados
     BOOL _hayHistorial;
+    BOOL _busquedaHecha;             // ya se pulso Buscar con este termino
+    BOOL _buscando;
 }
 
 #pragma mark - Historial (lo unico que se guarda, y solo en el telefono)
@@ -78,10 +80,11 @@ static const NSUInteger TTSugerenciasMaximo = 8;
     [super viewDidLoad];
     self.title = @"Buscar";
     self.view.backgroundColor = [TTTheme fondo];
-    self.automaticallyAdjustsScrollViewInsets = NO;   // iOS 9/10; el iOS 11+ no existe en este SDK
+    self.automaticallyAdjustsScrollViewInsets = NO;
 
     _sugerencias = [NSMutableArray array];
-    _resultados  = [NSMutableArray array];
+    _enElFeed    = [NSMutableArray array];
+    _deTikTok    = @[];
     _termino     = @"";
 
     self.navigationItem.leftBarButtonItem =
@@ -106,8 +109,7 @@ static const NSUInteger TTSugerenciasMaximo = 8;
     if (barra) {
         barra.barTintColor = [TTTheme superficie];
         barra.tintColor = [TTTheme acento];
-        barra.titleTextAttributes =
-            @{ NSForegroundColorAttributeName : [TTTheme textoPrimario] };
+        barra.titleTextAttributes = @{ NSForegroundColorAttributeName : [TTTheme textoPrimario] };
     }
 
     [self recalcular];
@@ -120,8 +122,7 @@ static const NSUInteger TTSugerenciasMaximo = 8;
     CGFloat y = self.topLayoutGuide.length;
     CGFloat altoBuscador = 44.0;
     _buscador.frame = CGRectMake(0, y, ancho, altoBuscador);
-    _tabla.frame = CGRectMake(0, y + altoBuscador, ancho,
-                              MAX(0.0, alto - y - altoBuscador));
+    _tabla.frame = CGRectMake(0, y + altoBuscador, ancho, MAX(0.0, alto - y - altoBuscador));
 }
 
 - (void)cerrar {
@@ -140,13 +141,51 @@ static const NSUInteger TTSugerenciasMaximo = 8;
 - (void)searchBar:(UISearchBar *)buscador textDidChange:(NSString *)texto {
     (void)buscador;
     _termino = texto ?: @"";
+    // Al cambiar el termino, una busqueda anterior ya no vale.
+    _busquedaHecha = NO;
+    _deTikTok = @[];
+    _avisoTikTok = nil;
     [self recalcular];
 }
 
 - (void)searchBarSearchButtonClicked:(UISearchBar *)buscador {
     [buscador resignFirstResponder];
-    [TTBusquedaViewController recordarTermino:_termino];
+    [self buscarDeVerdad];
+}
+
+- (void)buscarDeVerdad {
+    NSString *t = [_termino stringByTrimmingCharactersInSet:
+                   [NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    if (t.length == 0) return;
+
+    [TTBusquedaViewController recordarTermino:t];
+    _busquedaHecha = YES;
+    _buscando = YES;
+    _deTikTok = @[];
+    _avisoTikTok = nil;
     [self recalcular];
+
+    __weak TTBusquedaViewController *deb = self;
+    [[TTCliente compartido] buscarPalabra:t
+        completado:^(NSArray *videos, NSString *cursor, BOOL hayMas, NSError *error) {
+        (void)cursor;
+        (void)hayMas;
+        TTBusquedaViewController *yo = deb;
+        if (!yo) return;
+        // Si el usuario ya escribio otra cosa, se descarta.
+        if (![yo->_termino isEqualToString:t]) return;
+
+        yo->_buscando = NO;
+        if (error) {
+            yo->_avisoTikTok = [TTCliente explicarError:error];
+            yo->_deTikTok = @[];
+        } else {
+            yo->_deTikTok = videos ?: @[];
+            yo->_avisoTikTok = yo->_deTikTok.count ? nil
+                : @"TikTok devolvio la busqueda vacia.";
+        }
+        [yo recalcular];
+    }];
 }
 
 #pragma mark - Armar la lista
@@ -185,7 +224,7 @@ static const NSUInteger TTSugerenciasMaximo = 8;
 
 - (void)recalcular {
     [_sugerencias removeAllObjects];
-    [_resultados removeAllObjects];
+    [_enElFeed removeAllObjects];
 
     NSString *t = [_termino stringByTrimmingCharactersInSet:
                    [NSCharacterSet whitespaceAndNewlineCharacterSet]];
@@ -214,14 +253,16 @@ static const NSUInteger TTSugerenciasMaximo = 8;
             [_sugerencias addObjectsFromArray:[unicos subarrayWithRange:NSMakeRange(0, cuantas)]];
         }
     } else {
-        for (NSString *s in unicos) {
-            if ([s rangeOfString:t options:NSCaseInsensitiveSearch].location != NSNotFound) {
-                [_sugerencias addObject:s];
-                if (_sugerencias.count >= TTSugerenciasMaximo) break;
+        if (!_busquedaHecha) {
+            for (NSString *s in unicos) {
+                if ([s rangeOfString:t options:NSCaseInsensitiveSearch].location != NSNotFound) {
+                    [_sugerencias addObject:s];
+                    if (_sugerencias.count >= TTSugerenciasMaximo) break;
+                }
             }
         }
         for (TTVideo *v in self.videos) {
-            if ([self video:v pareceDe:t]) [_resultados addObject:v];
+            if ([self video:v pareceDe:t]) [_enElFeed addObject:v];
         }
     }
 
@@ -239,68 +280,116 @@ static const NSUInteger TTSugerenciasMaximo = 8;
 
 #pragma mark - Forma de la tabla
 
-- (BOOL)soloAviso {
-    return (_sugerencias.count == 0 && _resultados.count == 0);
+// El plan dice que secciones salen y en que orden.  Nunca esta vacio: cuando no
+// hay nada, queda una sola seccion con el aviso.
+- (NSArray *)plan {
+    NSMutableArray *p = [NSMutableArray array];
+    if (_deTikTok.count)               [p addObject:@"tiktok"];
+    if (_enElFeed.count)               [p addObject:@"feed"];
+    if (!_busquedaHecha && _sugerencias.count) [p addObject:@"sug"];
+    return p;
 }
 
-- (BOOL)seccionEsDeResultados:(NSInteger)seccion {
-    if (_sugerencias.count == 0) return (_resultados.count > 0);
-    return (seccion == 1 && _resultados.count > 0);
+- (NSArray *)filasDeSeccion:(NSString *)tipo {
+    if ([tipo isEqualToString:@"tiktok"]) return _deTikTok;
+    if ([tipo isEqualToString:@"feed"])   return _enElFeed;
+    return _sugerencias;
 }
 
 - (NSString *)textoDeAviso {
-    if (_termino.length == 0) {
+    if (_buscando) return @"Buscando en TikTok...";
+
+    NSString *t = [_termino stringByTrimmingCharactersInSet:
+                   [NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    if (t.length == 0) {
         return @"Escribe arriba para filtrar.\n\n"
                 "Las sugerencias salen de tus busquedas recientes y de los temas y autores "
                 "de los videos que ya has cargado.";
     }
+    if (_busquedaHecha) {
+        return [NSString stringWithFormat:
+            @"Nada que coincida con \u00ab%@\u00bb.\n\n"
+             "%@\n\n"
+             "La busqueda global de TikTok solo responde con la sesion de un navegador "
+             "(su msToken). Si la pegas en Ajustes \u2192 Cookies, la app la usara y los "
+             "resultados saldran aqui. Mientras tanto, busca dentro de los videos que ya "
+             "tienes cargados.", t, _avisoTikTok ?: @"TikTok no devolvio resultados."];
+    }
     return [NSString stringWithFormat:
         @"No hay nada en el feed cargado que coincida con \u00ab%@\u00bb.\n\n"
-         "La busqueda global de TikTok esta cerrada a los clientes que no son la app "
-         "oficial (sus rutas contestan vacio), asi que por ahora la lupa busca dentro "
-         "de los videos que ya tienes.", _termino];
+         "Pulsa Buscar para preguntar tambien a TikTok.", t];
 }
 
 - (NSInteger)numberOfSectionsInTableView:(UITableView *)tabla {
     (void)tabla;
-    if (_sugerencias.count && _resultados.count) return 2;
-    return 1;
+    NSInteger n = (NSInteger)[[self plan] count];
+    return n > 0 ? n : 1;
 }
 
 - (NSInteger)tableView:(UITableView *)tabla numberOfRowsInSection:(NSInteger)seccion {
     (void)tabla;
-    if ([self soloAviso]) return 1;
-    if ([self seccionEsDeResultados:seccion]) return (NSInteger)_resultados.count;
-    return (NSInteger)_sugerencias.count;
+    NSArray *plan = [self plan];
+    if (plan.count == 0) return 1;                       // el aviso
+    return (NSInteger)[self filasDeSeccion:plan[(NSUInteger)seccion]].count;
 }
 
 - (NSString *)tableView:(UITableView *)tabla titleForHeaderInSection:(NSInteger)seccion {
     (void)tabla;
-    if ([self soloAviso]) return nil;
-    if ([self seccionEsDeResultados:seccion]) return @"En el feed";
-    if (_termino.length) return @"Sugerencias";
-    return _hayHistorial ? @"Recientes y del feed" : @"Del feed";
+    NSArray *plan = [self plan];
+    if (plan.count == 0) return nil;
+    NSString *tipo = plan[(NSUInteger)seccion];
+    if ([tipo isEqualToString:@"tiktok"]) return @"De TikTok";
+    if ([tipo isEqualToString:@"feed"])   return @"En tus videos cargados";
+    return _termino.length ? @"Sugerencias"
+                           : (_hayHistorial ? @"Recientes y del feed" : @"Del feed");
 }
 
 - (CGFloat)tableView:(UITableView *)tabla heightForRowAtIndexPath:(NSIndexPath *)ruta {
-    if ([self soloAviso]) {
+    NSArray *plan = [self plan];
+    if (plan.count == 0) {
         CGSize limite = CGSizeMake(MAX(80.0, CGRectGetWidth(tabla.bounds) - 44.0), CGFLOAT_MAX);
         CGRect r = [[self textoDeAviso] boundingRectWithSize:limite
                                                      options:NSStringDrawingUsesLineFragmentOrigin
                                                   attributes:@{ NSFontAttributeName : [TTTheme fuenteMenuda] }
                                                      context:nil];
-        return MAX(90.0, ceil(r.size.height) + 34.0);
+        return MAX(110.0, ceil(r.size.height) + 34.0);
     }
-    return [self seccionEsDeResultados:ruta.section] ? 58.0 : 46.0;
+    return [plan[(NSUInteger)ruta.section] isEqualToString:@"sug"] ? 46.0 : 58.0;
 }
 
 #pragma mark - Celdas
 
+- (void)ponerVideo:(TTVideo *)v enCelda:(TTCeldaResultado *)c {
+    c.videoId = v.identificador;
+    c.backgroundColor = [TTTheme superficie];
+    c.textLabel.textColor = [TTTheme textoPrimario];
+    c.detailTextLabel.textColor = [TTTheme textoSecundario];
+    c.textLabel.text = v.autorUsuario.length
+        ? [NSString stringWithFormat:@"@%@  ·  %@ me gusta", v.autorUsuario, v.textoMeGusta]
+        : [NSString stringWithFormat:@"%@ me gusta", v.textoMeGusta];
+    c.detailTextLabel.text = v.descripcion.length ? v.descripcion : @"(sin descripcion)";
+    c.imageView.image = nil;
+
+    NSString *portada = v.portada.length ? v.portada : v.portadaAnimada;
+    if (portada.length) {
+        __weak TTCeldaResultado *deb = c;
+        [TTCliente cargarImagen:portada completado:^(UIImage *imagen) {
+            TTCeldaResultado *fuerte = deb;
+            if (!fuerte || !imagen) return;
+            if (![fuerte.videoId isEqualToString:v.identificador]) return;   // ya no toca
+            fuerte.imageView.image = imagen;
+        }];
+    }
+}
+
 - (UITableViewCell *)tableView:(UITableView *)tabla cellForRowAtIndexPath:(NSIndexPath *)ruta {
-    if ([self soloAviso]) {
+    NSArray *plan = [self plan];
+
+    if (plan.count == 0) {
         UITableViewCell *c = [tabla dequeueReusableCellWithIdentifier:@"Aviso"];
         if (!c) {
-            c = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:@"Aviso"];
+            c = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault
+                                       reuseIdentifier:@"Aviso"];
             c.textLabel.numberOfLines = 0;
             c.textLabel.font = [TTTheme fuenteMenuda];
             c.selectionStyle = UITableViewCellSelectionStyleNone;
@@ -311,57 +400,44 @@ static const NSUInteger TTSugerenciasMaximo = 8;
         return c;
     }
 
-    if ([self seccionEsDeResultados:ruta.section]) {
-        TTCeldaResultado *c = (TTCeldaResultado *)[tabla dequeueReusableCellWithIdentifier:@"Resultado"];
+    NSString *tipo = plan[(NSUInteger)ruta.section];
+
+    if ([tipo isEqualToString:@"sug"]) {
+        UITableViewCell *c = [tabla dequeueReusableCellWithIdentifier:@"Sugerencia"];
         if (!c) {
-            c = [[TTCeldaResultado alloc] initWithStyle:UITableViewCellStyleSubtitle
-                                        reuseIdentifier:@"Resultado"];
-            c.textLabel.font = [UIFont systemFontOfSize:15.0 weight:UIFontWeightSemibold];
-            c.detailTextLabel.font = [TTTheme fuenteMenuda];
-            c.detailTextLabel.numberOfLines = 1;
+            c = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault
+                                       reuseIdentifier:@"Sugerencia"];
+            c.textLabel.font = [UIFont systemFontOfSize:16.0];
         }
-        TTVideo *v = _resultados[(NSUInteger)ruta.row];
-        c.videoId = v.identificador;
         c.backgroundColor = [TTTheme superficie];
         c.textLabel.textColor = [TTTheme textoPrimario];
-        c.detailTextLabel.textColor = [TTTheme textoSecundario];
-        c.textLabel.text = v.autorUsuario.length
-            ? [NSString stringWithFormat:@"@%@  ·  %@ me gusta", v.autorUsuario, v.textoMeGusta]
-            : [NSString stringWithFormat:@"%@ me gusta", v.textoMeGusta];
-        c.detailTextLabel.text = v.descripcion.length ? v.descripcion : @"(sin descripcion)";
-        c.imageView.image = nil;
-        NSString *portada = v.portada.length ? v.portada : v.portadaAnimada;
-        if (portada.length) {
-            __weak TTCeldaResultado *deb = c;
-            [TTCliente cargarImagen:portada completado:^(UIImage *imagen) {
-                TTCeldaResultado *fuerte = deb;
-                if (!fuerte || !imagen) return;
-                if (![fuerte.videoId isEqualToString:v.identificador]) return;  // la celda ya es de otro
-                fuerte.imageView.image = imagen;
-            }];
-        }
+        c.textLabel.text = _sugerencias[(NSUInteger)ruta.row];
+        c.imageView.tintColor = [TTTheme textoSecundario];
+        c.imageView.image = [TTTheme icono:@"buscar" lado:17];
         return c;
     }
 
-    UITableViewCell *c = [tabla dequeueReusableCellWithIdentifier:@"Sugerencia"];
+    TTCeldaResultado *c = (TTCeldaResultado *)[tabla dequeueReusableCellWithIdentifier:@"Resultado"];
     if (!c) {
-        c = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:@"Sugerencia"];
-        c.textLabel.font = [UIFont systemFontOfSize:16.0];
+        c = [[TTCeldaResultado alloc] initWithStyle:UITableViewCellStyleSubtitle
+                                    reuseIdentifier:@"Resultado"];
+        c.textLabel.font = [UIFont systemFontOfSize:15.0 weight:UIFontWeightSemibold];
+        c.detailTextLabel.font = [TTTheme fuenteMenuda];
+        c.detailTextLabel.numberOfLines = 1;
     }
-    c.backgroundColor = [TTTheme superficie];
-    c.textLabel.textColor = [TTTheme textoPrimario];
-    c.textLabel.text = _sugerencias[(NSUInteger)ruta.row];
-    c.imageView.tintColor = [TTTheme textoSecundario];
-    c.imageView.image = [TTTheme icono:@"buscar" lado:17];
+    [self ponerVideo:[self filasDeSeccion:tipo][(NSUInteger)ruta.row] enCelda:c];
     return c;
 }
 
 - (void)tableView:(UITableView *)tabla didSelectRowAtIndexPath:(NSIndexPath *)ruta {
     [tabla deselectRowAtIndexPath:ruta animated:YES];
-    if ([self soloAviso]) return;
+    NSArray *plan = [self plan];
+    if (plan.count == 0) return;
 
-    if ([self seccionEsDeResultados:ruta.section]) {
-        TTVideo *v = _resultados[(NSUInteger)ruta.row];
+    NSString *tipo = plan[(NSUInteger)ruta.section];
+
+    if (![tipo isEqualToString:@"sug"]) {
+        TTVideo *v = [self filasDeSeccion:tipo][(NSUInteger)ruta.row];
         [TTBusquedaViewController recordarTermino:_termino];
         [_buscador resignFirstResponder];
         if ([self.delegado respondsToSelector:@selector(busquedaElegirVideo:)]) {
@@ -370,13 +446,12 @@ static const NSUInteger TTSugerenciasMaximo = 8;
         return;
     }
 
-    // Una sugerencia: se pone en el buscador y se muestran sus resultados.
+    // Una sugerencia: se pone en el buscador y se pregunta a TikTok.
     NSString *s = _sugerencias[(NSUInteger)ruta.row];
     _buscador.text = s;
     _termino = s;
     [_buscador resignFirstResponder];
-    [TTBusquedaViewController recordarTermino:s];
-    [self recalcular];
+    [self buscarDeVerdad];
 }
 
 @end

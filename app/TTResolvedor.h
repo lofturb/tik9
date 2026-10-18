@@ -47,6 +47,11 @@
 // Tira la cache de direcciones resueltas (al cambiar de motor o de relay).
 - (void)vaciarCache;
 
+// Olvida la direccion ya resuelta de UN video.  La app lo usa tras un fallo de
+// reproduccion: asi el reintento pide una direccion nueva en vez de repetir la
+// que no funciono (que puede haber caducado).
+- (void)olvidarVideo:(TTVideo *)video;
+
 // Prueba el relay configurado (para el boton de Ajustes).
 - (void)probarRelay:(void (^)(NSString *informe, BOOL correcto))completado;
 

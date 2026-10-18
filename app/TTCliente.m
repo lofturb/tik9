@@ -171,6 +171,54 @@ static NSError *TTError(TTCodigoError codigo, NSString *texto) {
     }];
 }
 
+#pragma mark - Busqueda
+
+- (void)buscarPalabra:(NSString *)palabra completado:(TTBloqueFeed)completado {
+    NSString *limpia = [palabra stringByTrimmingCharactersInSet:
+                        [NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    if (limpia.length == 0) {
+        completado(@[], nil, NO, TTError(TTErrorVacio, @"Escribe algo para buscar."));
+        return;
+    }
+
+    NSMutableArray *pares = [NSMutableArray arrayWithArray:[[TTSesion compartida] paresBase]];
+    [pares addObject:@[ @"count", @"12" ]];
+    [pares addObject:@[ @"offset", @"0" ]];
+    [pares addObject:@[ @"is_filter_search", @"0" ]];
+    [pares addObject:@[ @"query_correct_type", @"1" ]];
+    [pares addObject:@[ @"search_source", @"normal_search" ]];
+    [pares addObject:@[ @"keyword", limpia ]];
+
+    [self pedirRuta:@"/api/search/general/full/" pares:pares
+         completado:^(NSDictionary *json, NSError *error) {
+        if (error) { completado(nil, nil, NO, error); return; }
+
+        // La respuesta mezcla tipos: de los videos interesa data[i].item.itemStruct
+        // (los elementos que no son video -- usuarios, retos... -- no lo traen).
+        NSArray *datos = json[@"data"];
+        NSMutableArray *videos = [NSMutableArray array];
+        if ([datos isKindOfClass:[NSArray class]]) {
+            for (id nodo in datos) {
+                if (![nodo isKindOfClass:[NSDictionary class]]) continue;
+                NSDictionary *estructura = nil;
+                id item = nodo[@"item"];
+                if ([item isKindOfClass:[NSDictionary class]]) {
+                    estructura = [item[@"itemStruct"] isKindOfClass:[NSDictionary class]]
+                                 ? item[@"itemStruct"] : item;
+                } else if ([nodo[@"itemStruct"] isKindOfClass:[NSDictionary class]]) {
+                    estructura = nodo[@"itemStruct"];
+                }
+                if (![estructura isKindOfClass:[NSDictionary class]]) continue;
+                TTVideo *v = [TTVideo desdeItemStruct:estructura];
+                if (v && [v tieneVideo]) [videos addObject:v];
+            }
+        }
+        NSString *siguiente = [json[@"cursor"] isKindOfClass:[NSString class]] ? json[@"cursor"] : nil;
+        BOOL hayMas = [json[@"hasMore"] boolValue];
+        completado(videos, siguiente, hayMas, nil);
+    }];
+}
+
 #pragma mark - Detalle
 
 - (void)detalleDeVideo:(NSString *)itemId

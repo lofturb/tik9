@@ -22,6 +22,12 @@ typedef void (^TTBloqueFeed)(NSArray *videos, NSString *cursor, BOOL hayMas, NSE
 // Feed "Para ti" (api/recommend/item_list).  cursor nil = primera pagina.
 - (void)feedParaTiCursor:(NSString *)cursor completado:(TTBloqueFeed)completado;
 
+// Busqueda real (api/search/general/full).  OJO: TikTok la cierra a quien no
+// lleve la sesion de un navegador; contesta 200 con el CUERPO VACIO (y la
+// cabecera tt_orcas_res: 1), que aqui llega como error.  Se deja puesta de todas
+// formas: si algun dia la sesion (msToken) la abre, los resultados ya se pintan.
+- (void)buscarPalabra:(NSString *)palabra completado:(TTBloqueFeed)completado;
+
 // Ficha de un video concreto (api/item/detail).  Puede venir vacia: TikTok ya
 // no la da para muchos videos; el feed trae todo lo necesario.
 - (void)detalleDeVideo:(NSString *)itemId

@@ -35,6 +35,7 @@
     NSInteger _indiceEnReproduccion;   // -1 = ninguno
     NSString *_idResolviendo;
     CGFloat _altoCelda;
+    NSMutableDictionary *_intentos;    // id -> reintentos por fallo de red
 
     UILabel *_aviso;      // "desliza para empezar" o el error de carga
     UIButton *_reintentar;
@@ -51,6 +52,7 @@
         _indiceActual = 0;
         _indiceEnReproduccion = -1;
         _altoCelda = 0.0;
+        _intentos = [NSMutableDictionary dictionary];
     }
     return self;
 }
@@ -255,6 +257,7 @@
     _primeraCargaHecha = NO;
     _indiceActual = 0;
     _indiceEnReproduccion = -1;
+    [_intentos removeAllObjects];
     [_tabla reloadData];
 
     _aviso.hidden = NO;
@@ -303,9 +306,24 @@
             yo->_aviso.text = @"TikTok no devolvio videos.";
         }
         if ((NSInteger)yo->_videos.count != antes) {
-            [yo->_tabla reloadData];
+            if (antes == 0) {
+                [yo->_tabla reloadData];
+            } else {
+                // Se anaden solo las filas nuevas: recargar la tabla entera a
+                // mitad de un deslizamiento es lo que hacia que se notara el tiron.
+                NSMutableArray *rutas = [NSMutableArray array];
+                for (NSInteger i = antes; i < (NSInteger)yo->_videos.count; i++) {
+                    [rutas addObject:[NSIndexPath indexPathForRow:i inSection:0]];
+                }
+                [yo->_tabla beginUpdates];
+                [yo->_tabla insertRowsAtIndexPaths:rutas
+                                  withRowAnimation:UITableViewRowAnimationNone];
+                [yo->_tabla endUpdates];
+            }
         }
-        [yo ponerAlDia];
+        // Solo se arranca la reproduccion si no habia ninguna: si llega una
+        // pagina mientras se mira un video, no se le corta.
+        if (yo->_indiceEnReproduccion < 0) [yo ponerAlDia];
     }];
 }
 
@@ -356,8 +374,14 @@
 }
 
 - (void)reproducirIndice:(NSInteger)indice {
+    [self reproducirIndice:indice ignorarCache:NO];
+}
+
+- (void)reproducirIndice:(NSInteger)indice ignorarCache:(BOOL)ignorar {
     if (indice < 0 || indice >= (NSInteger)_videos.count) return;
     TTVideo *video = _videos[(NSUInteger)indice];
+    _indiceEnReproduccion = indice;
+    if (ignorar) [[TTResolvedor compartido] olvidarVideo:video];
 
     TTVideoCell *celda = [self celdaEnIndice:indice];
     [celda ponerPortadaVisible:YES];
@@ -369,6 +393,7 @@
     _idResolviendo = video.identificador;
 
     __weak TTFeedViewController *deb = self;
+    NSString *clave = video.identificador.length ? video.identificador : @"";
     [[TTResolvedor compartido] resolverVideo:video
         completado:^(NSDictionary *resultado, NSError *error) {
         TTFeedViewController *yo = deb;
@@ -381,23 +406,17 @@
         if (!c) return;
 
         if (error || !resultado) {
-            [c mostrarCargando:NO];
-            [c mostrarError:[error localizedDescription]];
-            [c ponerPortadaVisible:YES];
+            [yo falloEnIndice:indice];
             return;
         }
 
         TTPlayer *p = [TTPlayer compartido];
         p.alListo = ^{
-            TTVideoCell *cc = [deb celdaEnIndice:indice];
-            [cc mostrarCargando:NO];
-            [cc ponerPortadaVisible:NO];
+            [deb marcarListoEnIndice:indice clave:clave];
         };
         p.alFallar = ^(NSError *e) {
             (void)e;
-            TTVideoCell *cc = [deb celdaEnIndice:indice];
-            [cc mostrarCargando:NO];
-            [cc mostrarError:@"No se pudo reproducir. Si se repite, activa el relay en Ajustes."];
+            [deb falloEnIndice:indice];
         };
         [p cargarURL:resultado[@"url"] cabeceras:resultado[@"cabeceras"]];
         [yo engancharCapaAlIndice:indice];
@@ -405,6 +424,49 @@
     }];
 
     [self precargarDesde:indice];
+}
+
+- (void)marcarListoEnIndice:(NSInteger)indice clave:(NSString *)clave {
+    if (clave.length) [_intentos removeObjectForKey:clave];
+    TTVideoCell *celda = [self celdaEnIndice:indice];
+    [celda mostrarCargando:NO];
+    [celda ponerPortadaVisible:NO];
+}
+
+// Un fallo NO quiere decir que el video este roto: casi siempre es un tropiezo de
+// red o una direccion que se quedo vieja.  Por eso se reintenta solo, pidiendo
+// una direccion nueva, y solo si vuelve a fallar se le dice algo al usuario.  La
+// caja de error era lo que aparecia "de vez en cuando" sin motivo.
+- (void)falloEnIndice:(NSInteger)indice {
+    if (indice < 0 || indice >= (NSInteger)_videos.count) return;
+    if (_indiceEnReproduccion != indice) return;
+
+    TTVideo *video = _videos[(NSUInteger)indice];
+    NSString *clave = video.identificador.length ? video.identificador : @"";
+    NSInteger intentos = [_intentos[clave] integerValue];
+    TTVideoCell *celda = [self celdaEnIndice:indice];
+
+    if (intentos < 2) {
+        _intentos[clave] = @(intentos + 1);
+        [celda mostrarError:nil];
+        [celda mostrarCargando:YES];
+        [celda ponerPortadaVisible:YES];
+        __weak TTFeedViewController *deb = self;
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.6 * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), ^{
+            TTFeedViewController *yo = deb;
+            if (!yo) return;
+            if (yo->_indiceEnReproduccion != indice) return;
+            [yo reproducirIndice:indice ignorarCache:YES];
+        });
+        return;
+    }
+
+    [celda mostrarCargando:NO];
+    [celda ponerPortadaVisible:YES];
+    [celda mostrarError:@"Este video no se pudo abrir (puede estar retirado o ser de "
+                        "otra region). Toca Reintentar. Si le pasa a varios seguidos, "
+                        "activa el relay en Ajustes."];
 }
 
 // Adelanta la resolucion de los dos videos siguientes.  Lo que cuesta cerca de
@@ -471,8 +533,10 @@
         TTFeedViewController *yo = deb;
         NSInteger i = [yo->_videos indexOfObject:v];
         if (i != NSNotFound) {
-            yo->_indiceEnReproduccion = -1;
-            [yo reproducirIndice:(NSInteger)i];
+            // Reintento a mano: se le devuelve el margen de reintentos y se pide
+            // una direccion nueva, por si la anterior se quedo vieja.
+            if (v.identificador.length) [yo->_intentos removeObjectForKey:v.identificador];
+            [yo reproducirIndice:(NSInteger)i ignorarCache:YES];
         }
     };
 }
@@ -488,10 +552,18 @@
 - (void)scrollViewDidScroll:(UITableView *)tabla {
     if (_altoCelda <= 0.0) return;
     NSInteger indice = (NSInteger)floor((tabla.contentOffset.y + _altoCelda / 2.0) / _altoCelda);
-    if (indice != _indiceActual && indice >= 0) {
-        _indiceActual = indice;
-        [self ponerAlDia];
-    }
+    if (indice < 0) indice = 0;
+    if (_videos.count && indice >= (NSInteger)_videos.count) indice = (NSInteger)_videos.count - 1;
+    if (indice == _indiceActual) return;
+    _indiceActual = indice;
+
+    // Durante el arrastre NO se toca el reproductor.  El video cambia cuando el
+    // dedo suelta y la lista se asienta (scrollViewDidEndDecelerating): asi el
+    // paso de un video a otro es suave, que era lo que se notaba a tirones.
+    // Aqui solo se adelanta trabajo barato: pedir mas paginas y resolver los
+    // videos que vienen (eso no toca ni el reproductor ni las celdas).
+    [self cargarMasSiHaceFalta];
+    [self precargarDesde:indice];
 }
 
 - (void)scrollViewDidEndDragging:(UIScrollView *)scroll willDecelerate:(BOOL)decelerando {

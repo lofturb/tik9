@@ -77,8 +77,9 @@ Cada vídeo ocupa toda la pantalla, como en la aplicación oficial:
 | **Pie de texto** | Autor (`@usuario`), descripción y el sonido, con un degradado por detrás para que se lea sobre el vídeo. |
 | **Botón de sonido** | Arriba a la derecha: silencia o devuelve el sonido. |
 
-Si un vídeo no carga, **no se queda en «Cargando…» para siempre**: sale el error
-con un botón **Reintentar** en la propia tarjeta.
+Si un vídeo no carga, **se reintenta solo** (pidiendo una dirección nueva, sin
+molestar); solo si falla tres veces sale el aviso con un botón **Reintentar** en la
+propia tarjeta.
 
 Diseño: **reproductor vertical 9:16**, estilos planos, tipografía del sistema y
 **todos los iconos dibujados por código** (vectoriales, sin ficheros de imagen).
@@ -103,13 +104,32 @@ guarda en una caché corta (10 minutos) las direcciones ya resueltas. Medido:
 Ese ~1 s era el pequeño retardo al cambiar de vídeo. Adelantándolo, deslizar sale
 casi al momento. Si vuelves a un vídeo ya visto, va directo de la caché.
 
+### El paso de un vídeo a otro, suave
+
+Antes, el vídeo se cambiaba **a mitad del arrastre**: al cruzar la mitad de la
+pantalla se paraba el reproductor, se soltaba la capa de vídeo y se pedía el
+siguiente. Eso era lo que se notaba a tirones. Ahora:
+
+* Mientras arrastras **no se toca el reproductor**: cada tarjeta muestra su
+  portada y el vídeo cambia **cuando sueltas y la lista se asienta**.
+* Durante el arrastre solo se adelanta trabajo barato: pedir más páginas y
+  resolver las direcciones de los que vienen.
+* Al paginar **no se recarga la lista entera**: se añaden solo las filas nuevas.
+
 ### La lupa, arriba a la derecha
 
 Como en la app oficial, el feed lleva una **lupa** en la esquina superior derecha.
-TikTok **no** da la búsqueda global a los clientes que no son la app oficial (está
-medido y documentado en `HALLAZGOS.md`), así que la lupa **no finge**: hace lo que
-sí se puede con datos reales.
+TikTok **no** da la búsqueda global a los clientes que no lleven la sesión de un
+navegador, y eso está **medido** (`HALLAZGOS.md`, 4 quater): se probaron **seis**
+combinaciones —cookies reales de `/explore`, el X-Bogus calculado de verdad y el
+juego completo de parámetros del navegador— y **todas** contestan `200` con el
+cuerpo vacío y `tt_orcas_res: 1`. Lo que falta es lo que calcula el JavaScript del
+navegador (su `msToken`), no la firma.
 
+Así que la lupa **pregunta de verdad y no finge**:
+
+* **Pregunta a TikTok** al pulsar Buscar: si algún día responde, los resultados
+  salen en la sección **«De TikTok»** y al tocar uno se abre en el feed.
 * **Sugerencias de verdad** mientras escribes: salen de tus **búsquedas
   recientes** (guardadas solo en el teléfono) y de los **retos** (hashtags) y
   **autores** de los vídeos que ya tienes cargados en el feed.
@@ -118,6 +138,13 @@ sí se puede con datos reales.
   él** en el feed.
 * Si no hay ninguna coincidencia, lo dice claro y recuerda por qué.
 * Botón **Vaciar** para borrar las búsquedas recientes.
+
+> **Truco, si quieres probarlo tú:** en el navegador del PC, entra en TikTok, mira
+> la cookie **`msToken`** (Herramientas de desarrollo → Aplicación → Cookies) y
+> pégala en **Ajustes → Cookies** de la app. La app la usará al firmar y la lupa
+> preguntará con esa sesión. Si así salen resultados, se puede automatizar; si no,
+> es que hace falta ejecutar el SDK entero (el «proyecto de investigación» de
+> `HALLAZGOS.md`). **Contesta si lo pruebas y te digo por dónde seguir.**
 
 ### Lo que TikTok no da sin ser la app oficial
 
@@ -430,13 +457,14 @@ En el dispositivo, pon en Ajustes la IP **de tu PC en la red local**
 |---|---|
 | «Certificado TLS no valido: iOS 9 no confia en la CA moderna» | Falta el paso **B.2**. Instala `certificados/CertificadosModernos.mobileconfig` una sola vez. |
 | El feed sale vacío o da error | Pulsa **Reintentar**. Si sigue, **Ajustes → Probar el feed** para ver el error real (red, DNS, certificados o firma). |
-| Un vídeo concreto no carga | Toca **Reintentar** en la tarjeta. Algunos vídeos pueden estar retirados o restringidos por región. |
-| El vídeo no se reproduce aunque el feed sí | Prueba a activar el **relay** en Ajustes (modo *Solo relay*): es el caso de iOS 9 sin las raíces instaladas. |
+| Un vídeo concreto no carga | La app **reintenta sola tres veces** (pidiendo una dirección nueva) antes de avisar. Si sale el aviso, toca **Reintentar** en la tarjeta: algunos vídeos están retirados o restringidos por región. |
+| Salió **«no se pudo reproducir»** una vez | Es un tropiezo de red, no un vídeo roto: la app ya reintenta sola y solo avisa si falla tres veces seguidas. Si le pasa a **varios seguidos**, activa el relay en Ajustes. |
+| Al deslizar se notaba un pequeño retardo | El vídeo siguiente ya se resuelve **por adelantado** (~1 s de salto 302 que ahora se hace mientras ves el actual) y el cambio de vídeo ocurre **cuando sueltas**, no a mitad del arrastre. |
+| Escribo en la lupa y no salen resultados de todo TikTok | Es lo que TikTok permite: su búsqueda exige la sesión de un navegador (`msToken`). La app la pide de todas formas, y si le pegas tu `msToken` en **Ajustes → Cookies** puede que sí responda (ver *La lupa*). |
 | La app no se instala / «no está firmada» | Falta **AppSync Unified** (ver Parte C). |
 | La app se ve con barras negras arriba y abajo | Faltan imágenes de arranque; se generan con `tools/generar_recursos.py` (el CI ya lo hace). |
-| La **lupa** no encuentra cosas de todo TikTok | Es a propósito y está medido: TikTok devuelve vacío a los clientes que no son la app oficial. La lupa busca dentro de los vídeos que ya tienes cargados (ver *La lupa*). |
 | Antes salía algún vídeo «sin dirección de reproducción» | Eran publicaciones de **solo fotos**. Ya se saltan: no son vídeos y no traen dirección. |
-| Al deslizar se notaba un pequeño retardo | El vídeo siguiente ya se resuelve **por adelantado** (~1 s de salto 302 que ahora se hace mientras ves el actual). Si sigue notándose, es la red o el CDN. |
+| El vídeo no se reproduce aunque el feed sí | Prueba a activar el **relay** en Ajustes (modo *Solo relay*): es el caso de iOS 9 sin las raíces instaladas. |
 | Los comentarios no se abren | Igual: están bloqueados para clientes no oficiales. El botón lo explica. |
 | El modo relay da «No se puede conectar» | PC apagado, IP distinta, o el firewall de Windows bloquea Python. |
 

@@ -299,6 +299,11 @@ static const NSUInteger TTCacheMaximo = 60;
     [self.cache removeAllObjects];
 }
 
+- (void)olvidarVideo:(TTVideo *)video {
+    NSString *clave = [self claveDe:video];
+    if (clave.length) [self.cache removeObjectForKey:clave];
+}
+
 - (void)prepararVideo:(TTVideo *)video {
     if (!video) return;
     NSString *clave = [self claveDe:video];
