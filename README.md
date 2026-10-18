@@ -120,10 +120,16 @@ siguiente. Eso era lo que se notaba a tirones. Ahora:
 
 Como en la app oficial, el feed lleva una **lupa** en la esquina superior derecha, y
 **busca de verdad en todo TikTok**. Costó tres intentos dar con el motivo
-(`HALLAZGOS.md`, 4 quinquies): la firma ya era correcta y las cookies no bastaban.
-Lo que la ruta exige es
+(`HALLAZGOS.md`, 4 quinquies y 4 sexies): la firma ya era correcta, las cookies no
+bastaban y, además, iOS **no estaba negociando HTTP/2** con el permiso de red que
+traía el `Info.plist`. Lo que la ruta exige es
 
-1. **HTTP/2** (lo pone `NSURLSession` solo, desde iOS 9),
+1. **HTTP/2**. La ruta responde vacío (`200` + 0 B + `tt_orcas_res: 1`) por
+   HTTP/1.1 aunque la firma y el token sean buenos; el feed, en cambio, va igual
+   por h1 y por h2 — por eso el fallo era invisible. `NSURLSession` negocia
+   HTTP/2 solo **cuando la conexión está sujeta a ATS**, así que la app ahora
+   exige ATS en `www.tiktok.com` (y mantiene el permiso global para el relay por
+   HTTP plano y los CDNs),
 2. la cookie **`ttwid`**, que es la identidad **anónima** — se consigue cargando una
    página pública, **sin cuenta**, y la app lo hace una vez al abrir la lupa, y
 3. un **`msToken` válido** dentro de la firma — y no hay que fabricarlo: TikTok lo
@@ -504,6 +510,10 @@ En el dispositivo, pon en Ajustes la IP **de tu PC en la red local**
 │   ├── busqueda_navegador.json       La petición de búsqueda real, capturada del navegador
 │   ├── receta_final.py / confianza_app.py  Reproduce la receta de la búsqueda
 │   ├── http2_variantes.py            Mide que la ruta exige HTTP/2
+│   ├── longitud_token.py / eco_token.py  Qué msToken regala TikTok en cada caso
+│   ├── reintento_app.py              Reproduce el reintento de la app (token caducado)
+│   ├── firma_mala.py / feed_h1.py    Cómo falla una firma rota; el feed por h1
+│   ├── rutas_h1.py                   Busca una ruta de búsqueda que acepte h1 (no hay)
 │   ├── probar_play.py / probar_final.py / probar_cabeceras_cdn.py
 │   ├── inspeccionar_play.py          Muestra la dirección firmada del feed
 │   └── probar_relay.py               Prueba el relay

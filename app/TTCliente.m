@@ -2,6 +2,7 @@
 #import "TTCliente.h"
 #import "TTSesion.h"
 #import "TTSignaCore.h"
+#import "TTResolvedor.h"
 #import <stdlib.h>
 
 NSString * const TTErrorDominio = @"Tik9";
@@ -41,10 +42,20 @@ static NSError *TTError(TTCodigoError codigo, NSString *texto) {
 - (void)buscarPalabra:(NSString *)palabra
                intento:(NSInteger)intento
             completado:(TTBloqueFeed)completado;
-- (void)intentoDeInforme:(NSString *)palabra
-                  numero:(NSInteger)numero
-                  lineas:(NSMutableArray *)lineas
-              completado:(void (^)(NSString *informe))completado;
+- (NSArray *)paresDeFeedConCursor:(NSString *)cursor conLosDeBusqueda:(BOOL)conBusqueda;
+- (void)sonda:(NSString *)etiqueta
+         ruta:(NSString *)ruta
+        pares:(NSArray *)pares
+       lineas:(NSMutableArray *)lineas
+   completado:(void (^)(void))completado;
+- (void)sonda:(NSString *)etiqueta
+         ruta:(NSString *)ruta
+        pares:(NSArray *)pares
+       intento:(NSInteger)intento
+       lineas:(NSMutableArray *)lineas
+   completado:(void (^)(void))completado;
+- (void)ecoDeProtocolo:(NSMutableArray *)lineas completado:(void (^)(void))completado;
+- (void)sondaDeRelay:(NSMutableArray *)lineas completado:(void (^)(void))completado;
 @end
 
 @implementation TTCliente
@@ -369,9 +380,147 @@ static NSError *TTError(TTCodigoError codigo, NSString *texto) {
 
 #pragma mark - Diagnostico de la busqueda
 
-// Hace la busqueda paso a paso y devuelve un informe de texto: identidad,
-// cookie, msToken, y por cada intento el codigo, los bytes, la cabecera de
-// marca y el status_code.  Es lo que contesta Ajustes -> Probar la busqueda.
+// Parametros del feed, con o sin los de la busqueda encima.  El sondeo con los
+// 20 parametros de la busqueda sirve para comprobar que la firma aguanta ese
+// juego: el feed ya funciona, asi que si con esos parametros encima sigue
+// trayendo datos, la firma no es el problema.
+- (NSArray *)paresDeFeedConCursor:(NSString *)cursor conLosDeBusqueda:(BOOL)conBusqueda {
+    NSMutableArray *pares = [NSMutableArray arrayWithArray:[[TTSesion compartida] paresBase]];
+    [pares addObject:@[ @"count", @"6" ]];
+    [pares addObject:@[ @"cursor", cursor ]];
+    if (conBusqueda) {
+        [pares addObject:@[ @"is_filter_search", @"0" ]];
+        [pares addObject:@[ @"query_correct_type", @"1" ]];
+        [pares addObject:@[ @"search_source", @"normal_search" ]];
+        [pares addObject:@[ @"keyword", @"auron" ]];
+    }
+    return pares;
+}
+
+// Una sonda con el mismo reintento que la busqueda real.  Deja en el informe lo
+// que contesta TikTok: codigo, bytes, tt_orcas_res, status_code y la cabecera
+// Connection, que es la que delata HTTP/1.1 (en HTTP/2 no existe).
+- (void)sonda:(NSString *)etiqueta
+         ruta:(NSString *)ruta
+        pares:(NSArray *)pares
+       lineas:(NSMutableArray *)lineas
+   completado:(void (^)(void))completado {
+    [self sonda:etiqueta ruta:ruta pares:pares intento:1 lineas:lineas completado:completado];
+}
+
+- (void)sonda:(NSString *)etiqueta
+         ruta:(NSString *)ruta
+        pares:(NSArray *)pares
+       intento:(NSInteger)intento
+       lineas:(NSMutableArray *)lineas
+   completado:(void (^)(void))completado {
+
+    [self pedirRutaCrudo:ruta pares:pares
+              completado:^(NSData *datos, NSHTTPURLResponse *respuesta, NSError *error) {
+        NSInteger estado = 0;
+        NSString *mensaje = @"";
+        NSDictionary *json = nil;
+        if (datos.length) {
+            id j = [NSJSONSerialization JSONObjectWithData:datos options:0 error:NULL];
+            if ([j isKindOfClass:[NSDictionary class]]) {
+                json = j;
+                estado = [self estadoDeBusqueda:json];
+                mensaje = [json[@"status_msg"] isKindOfClass:[NSString class]]
+                          ? json[@"status_msg"] : @"";
+            }
+        }
+        NSString *orcas = [self cabecera:@"tt_orcas_res" de:respuesta];
+        NSString *conn  = [self cabecera:@"connection" de:respuesta];
+        [lineas addObject:[NSString stringWithFormat:
+            @"%@ %ld) HTTP %ld  %lu B  orcas=%@  status=%ld  connection=%@  %@",
+            etiqueta, (long)intento, (long)(respuesta ? respuesta.statusCode : 0),
+            (unsigned long)datos.length, orcas.length ? orcas : @"-", (long)estado,
+            conn.length ? conn : @"(no hay)", mensaje]];
+        if (error) {
+            [lineas addObject:[NSString stringWithFormat:@"   error: %@",
+                               error.localizedDescription]];
+        }
+        if (json) {
+            [lineas addObject:[NSString stringWithFormat:@"   videos leidos: %lu",
+                               (unsigned long)[self videosDeRespuestaDeBusqueda:json].count]];
+        }
+        NSString *nuevo = [self msTokenDeRespuesta:respuesta];
+        if (nuevo.length) {
+            [lineas addObject:[NSString stringWithFormat:@"   regala msToken de %lu car.: %@...",
+                               (unsigned long)nuevo.length,
+                               [nuevo substringToIndex:MIN((NSUInteger)8, nuevo.length)]]];
+        }
+        // El mismo reintento que hace la busqueda de verdad, contado paso a paso.
+        if (intento == 1 && nuevo.length && (error || estado == 2483 || datos.length == 0)) {
+            [[TTSesion compartida] guardarMsTokenAprendido:nuevo];
+            [lineas addObject:@"   -> se guarda ese msToken y se repite"];
+            [self sonda:etiqueta ruta:ruta pares:pares intento:2 lineas:lineas
+             completado:completado];
+            return;
+        }
+        completado();
+    }];
+}
+
+// Pregunta a un servicio de fuera por el protocolo y el TLS que ha negociado
+// esta app.  Desde dentro no hay forma de verlo, y es la diferencia que explica
+// que la busqueda falle: la ruta exige HTTP/2.
+- (void)ecoDeProtocolo:(NSMutableArray *)lineas completado:(void (^)(void))completado {
+    NSMutableURLRequest *peticion = [NSMutableURLRequest requestWithURL:
+        [NSURL URLWithString:@"https://www.cloudflare.com/cdn-cgi/trace"]];
+    peticion.timeoutInterval = 15.0;
+    [[[NSURLSession sharedSession] dataTaskWithRequest:peticion
+        completionHandler:^(NSData *datos, NSURLResponse *respuesta, NSError *error) {
+        (void)respuesta;
+        if (error) {
+            [lineas addObject:[NSString stringWithFormat:@"eco de protocolo: error %@",
+                               error.localizedDescription]];
+        } else {
+            NSString *texto = [[NSString alloc] initWithData:datos
+                                                    encoding:NSUTF8StringEncoding] ?: @"";
+            NSMutableArray *trozos = [NSMutableArray array];
+            for (NSString *linea in [texto componentsSeparatedByString:@"\n"]) {
+                if ([linea hasPrefix:@"http="] || [linea hasPrefix:@"tls="]) {
+                    [trozos addObject:linea];
+                }
+            }
+            [lineas addObject:[NSString stringWithFormat:@"eco de protocolo: %@",
+                               trozos.count ? [trozos componentsJoinedByString:@" "]
+                                            : @"(sin datos)"]];
+        }
+        dispatch_async(dispatch_get_main_queue(), ^{ completado(); });
+    }] resume];
+}
+
+// ¿Sigue funcionando el HTTP plano del relay?  ATS lo corta en seco, asi que
+// despues de tocar ATS hay que comprobarlo.
+- (void)sondaDeRelay:(NSMutableArray *)lineas completado:(void (^)(void))completado {
+    NSString *base = [TTResolvedor relayBase];
+    if (base.length == 0) {
+        [lineas addObject:@"relay: sin configurar"];
+        completado();
+        return;
+    }
+    NSMutableURLRequest *peticion = [NSMutableURLRequest requestWithURL:[NSURL URLWithString:base]];
+    peticion.timeoutInterval = 8.0;
+    [[[NSURLSession sharedSession] dataTaskWithRequest:peticion
+        completionHandler:^(NSData *datos, NSURLResponse *respuesta, NSError *error) {
+        NSString *resumen;
+        if (error) {
+            resumen = [NSString stringWithFormat:@"error %@", error.localizedDescription];
+        } else {
+            resumen = [NSString stringWithFormat:@"HTTP %ld, %lu B",
+                       (long)([(NSHTTPURLResponse *)respuesta statusCode]),
+                       (unsigned long)datos.length];
+        }
+        [lineas addObject:[NSString stringWithFormat:@"relay %@: %@", base, resumen]];
+        dispatch_async(dispatch_get_main_queue(), ^{ completado(); });
+    }] resume];
+}
+
+// Hace la busqueda paso a paso y devuelve un informe de texto.  Es lo que
+// contesta Ajustes -> Probar la busqueda.  Lo primero que prueba es la busqueda
+// de verdad, para que salga arriba y no haya que desplazar la pantalla.
 - (void)informeDeBusqueda:(NSString *)palabra
                completado:(void (^)(NSString *informe))completado {
 
@@ -381,101 +530,32 @@ static NSError *TTError(TTCodigoError codigo, NSString *texto) {
 
     TTSesion *ses = [TTSesion compartida];
     NSMutableArray *lineas = [NSMutableArray array];
+    NSString *msAntes = [ses msToken];
     [lineas addObject:[NSString stringWithFormat:@"palabra: %@", limpia]];
-    [lineas addObject:[NSString stringWithFormat:@"ttwid antes: %@",
-                       [ses hayIdentidad] ? @"si" : @"NO"]];
-    [lineas addObject:[NSString stringWithFormat:@"cookie antes: %lu car.",
-                       (unsigned long)[ses cookieDeSesion].length]];
-    [lineas addObject:[NSString stringWithFormat:@"msToken antes: %lu car.",
-                       (unsigned long)[ses msToken].length]];
+    [lineas addObject:[NSString stringWithFormat:
+        @"ttwid antes: %@   cookie antes: %lu car.   msToken antes: %lu car.%@",
+        [ses hayIdentidad] ? @"si" : @"NO",
+        (unsigned long)[ses cookieDeSesion].length, (unsigned long)msAntes.length,
+        msAntes.length > 8 ? [NSString stringWithFormat:@" (%@...)", [msAntes substringToIndex:8]] : @""]];
 
     [ses prepararIdentidad:^(BOOL lograda) {
-        [lineas addObject:[NSString stringWithFormat:@"identidad: %@ (ttwid %@)",
+        [lineas addObject:[NSString stringWithFormat:@"identidad: %@ (ttwid %@)  msToken: %lu car.",
                            lograda ? @"lograda" : @"NO",
-                           [[TTSesion compartida] hayIdentidad] ? @"si" : @"NO"]];
-        [lineas addObject:[NSString stringWithFormat:@"msToken tras identidad: %lu car.",
+                           [[TTSesion compartida] hayIdentidad] ? @"si" : @"NO",
                            (unsigned long)[[TTSesion compartida] msToken].length]];
 
-        // Sondeo al feed: si esto trae datos, la red, el TLS y la firma estan
-        // bien y lo que falla es propio de la ruta de busqueda.
-        NSMutableArray *pares = [NSMutableArray arrayWithArray:[[TTSesion compartida] paresBase]];
-        [pares addObject:@[ @"count", @"6" ]];
-        [pares addObject:@[ @"cursor", @"0" ]];
-        [self pedirRutaCrudo:@"/api/recommend/item_list/" pares:pares
-                  completado:^(NSData *datos, NSHTTPURLResponse *respuesta, NSError *error) {
-            [lineas addObject:[NSString stringWithFormat:@"feed: HTTP %ld, %lu B%@",
-                (long)(respuesta ? respuesta.statusCode : 0), (unsigned long)datos.length,
-                error ? [NSString stringWithFormat:@" (error: %@)", error.localizedDescription] : @""]];
-            [self intentoDeInforme:limpia numero:1 lineas:lineas completado:completado];
-        }];
-    }];
-}
-
-- (void)intentoDeInforme:(NSString *)palabra
-                  numero:(NSInteger)numero
-                  lineas:(NSMutableArray *)lineas
-              completado:(void (^)(NSString *informe))completado {
-
-    [self pedirRutaCrudo:@"/api/search/general/full/" pares:[self paresDeBusqueda:palabra]
-              completado:^(NSData *datos, NSHTTPURLResponse *respuesta, NSError *error) {
-
-        NSLog(@"[Tik9] busqueda %ld: HTTP %ld, %lu B, error=%@", (long)numero,
-              (long)(respuesta ? respuesta.statusCode : 0), (unsigned long)datos.length, error);
-
-        NSInteger estado = 0, cuantos = -1;
-        NSString *mensaje = @"";
-        NSDictionary *json = nil;
-        if (error) {
-            [lineas addObject:[NSString stringWithFormat:@"%ld) error: %@",
-                               (long)numero, error.localizedDescription]];
-        }
-        if (datos.length) {
-            id j = [NSJSONSerialization JSONObjectWithData:datos options:0 error:NULL];
-            if ([j isKindOfClass:[NSDictionary class]]) {
-                json = j;
-                estado = [self estadoDeBusqueda:json];
-                id d = json[@"data"];
-                cuantos = [d isKindOfClass:[NSArray class]] ? (NSInteger)[(NSArray *)d count] : -1;
-                mensaje = [json[@"status_msg"] isKindOfClass:[NSString class]]
-                          ? json[@"status_msg"] : @"";
-            }
-        }
-        if (!error) {
-            NSString *orcas = [self cabecera:@"tt_orcas_res" de:respuesta];
-            [lineas addObject:[NSString stringWithFormat:
-                @"%ld) HTTP %ld  %lu B  orcas=%@  status=%ld  data=%ld  %@",
-                (long)numero, (long)(respuesta ? respuesta.statusCode : 0),
-                (unsigned long)datos.length, orcas.length ? orcas : @"-",
-                (long)estado, (long)cuantos, mensaje]];
-        }
-        if (json) {
-            [lineas addObject:[NSString stringWithFormat:@"   videos leidos: %lu",
-                               (unsigned long)[self videosDeRespuestaDeBusqueda:json].count]];
-        }
-
-        NSString *nuevo = [self msTokenDeRespuesta:respuesta];
-        if (nuevo.length) {
-            [lineas addObject:[NSString stringWithFormat:@"   x-ms-token: %lu car.",
-                               (unsigned long)nuevo.length]];
-        }
-
-        // Mismo reintento que la busqueda real, contado paso a paso.
-        if (numero < 2 && nuevo.length && (error || estado == 2483)) {
-            [[TTSesion compartida] guardarMsTokenAprendido:nuevo];
-            [lineas addObject:@"   -> se guarda el msToken y se repite"];
-            [self intentoDeInforme:palabra numero:numero + 1 lineas:lineas completado:completado];
-            return;
-        }
-        if (numero < 2 && estado == 2483) {
-            [lineas addObject:@"   -> falta identidad: se rehace y se repite"];
-            [[TTSesion compartida] olvidarIdentidad];
-            [[TTSesion compartida] prepararIdentidad:^(BOOL lograda) {
-                (void)lograda;
-                [self intentoDeInforme:palabra numero:numero + 1 lineas:lineas completado:completado];
-            }];
-            return;
-        }
-        completado([lineas componentsJoinedByString:@"\n"]);
+        [self sonda:@"busqueda(20)" ruta:@"/api/search/general/full/"
+               pares:[self paresDeBusqueda:limpia] lineas:lineas completado:^{
+        [self sonda:@"feed(16)" ruta:@"/api/recommend/item_list/"
+               pares:[self paresDeFeedConCursor:@"0" conLosDeBusqueda:NO]
+              lineas:lineas completado:^{
+        [self sonda:@"feed+busqueda(20)" ruta:@"/api/recommend/item_list/"
+               pares:[self paresDeFeedConCursor:@"0" conLosDeBusqueda:YES]
+              lineas:lineas completado:^{
+        [self ecoDeProtocolo:lineas completado:^{
+        [self sondaDeRelay:lineas completado:^{
+            completado([lineas componentsJoinedByString:@"\n"]);
+        }]; }]; }]; }]; }];
     }];
 }
 

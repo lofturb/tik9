@@ -46,8 +46,33 @@
 	     puede funcionar; si no, se usa el modo relay por HTTP plano. -->
 	<key>NSAppTransportSecurity</key>
 	<dict>
+		<!-- Cierto: se sigue permitiendo HTTP plano (el relay) y TLS flojo en
+		     los CDNs, tal como estaba. -->
 		<key>NSAllowsArbitraryLoads</key>
 		<true/>
+		<key>NSAllowsArbitraryLoadsForMedia</key>
+		<true/>
+		<!-- Menos en www.tiktok.com, donde se EXIGE ATS de verdad.  No es por
+		     seguridad: es porque iOS solo negocia HTTP/2 en conexiones sujetas
+		     a ATS, y la ruta de busqueda de TikTok exige HTTP/2.  Con el
+		     permiso global el telefono hablaba HTTP/1.1 y TikTok contestaba
+		     200 con el cuerpo vacio (cabecera tt_orcas_res: 1), que es lo que
+		     parecia "no hay resultados".  Un diccionario de excepcion hace que
+		     ATS ignore las claves globales para ese dominio (lo documenta
+		     Apple: "Domains you specify in that dictionary aren't affected by
+		     this key's value"). -->
+		<key>NSExceptionDomains</key>
+		<dict>
+			<key>www.tiktok.com</key>
+			<dict>
+				<key>NSExceptionAllowsInsecureHTTPLoads</key>
+				<false/>
+				<key>NSExceptionRequiresForwardSecrecy</key>
+				<true/>
+				<key>NSExceptionMinimumTLSVersion</key>
+				<string>TLSv1.2</string>
+			</dict>
+		</dict>
 	</dict>
 	<!-- iOS 9 avisa si se abre una hoja de compartir con archivos; no usamos. -->
 

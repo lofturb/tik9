@@ -291,6 +291,61 @@ Reproducir: `pip install "curl_cffi<0.8"` y luego
 
 ---
 
+## 4 sexies. **El teléfono hablaba HTTP/1.1** (medido el 2026-10-19)
+
+En el teléfono la búsqueda seguía fallando (`200`, 0 B, `tt_orcas_res: 1`) aunque
+el feed cargaba sin problema. Eso apuntaba a una sola cosa, y se comprobó en
+Python:
+
+| Prueba | Resultado |
+|---|---|
+| `/api/recommend/item_list/` (el feed) por **HTTP/1.1** | `200`, **313–325 KB** de datos |
+| `/api/recommend/item_list/` por HTTP/2 | `200`, 344 KB |
+| `/api/search/general/full/` por **HTTP/2** | `200`, 300 KB, 13 vídeos |
+| `/api/search/general/full/` por **HTTP/1.1** | `200`, **0 B**, `tt_orcas_res: 1` |
+| `/api/search/item/full/`, `/api/search/video/full/`, en `m.tiktok.com`… por HTTP/1.1 | todas `0 B` (o `url doesn't match`) |
+
+O sea: **el feed funciona igual por h1, y la búsqueda no**. Un móvil que hable
+HTTP/1.1 carga el feed perfectamente y la búsqueda le devuelve vacío, que es
+exactamente lo que se veía. La afirmación de **4 quinquies** («`NSURLSession` ya
+negocia HTTP/2… viene dado») era el error: en este teléfono no lo estaba haciendo.
+
+Comprobaciones que descartan las otras explicaciones:
+
+* **No es el `msToken` caducado.** `prototipo/reintento_app.py` reproduce el
+  reintento exacto de la app (token viejo → TikTok regala otro en `x-ms-token` →
+  repetir): por **HTTP/2** da **254 940 B** de resultados. Por h1, con cualquier
+  token, `0 B`.
+* **No es un eco del token.** `prototipo/eco_token.py`: TikTok nunca devuelve el
+  mismo token que recibe; siempre regala uno nuevo (de 120, 124, 128 o 132
+  caracteres, según el caso), y ese token sirve incluso desde otra sesión.
+* **No hace falta la cookie `msToken`**, solo la firma (`eco_token.py`, caso B).
+* **No es la firma de la búsqueda.** `prototipo/firma_mala.py`: una firma rota da
+  **0 B** en la búsqueda (igual que h1, no distingue) pero **18 B**
+  (`{"status_code": 0}`) en el feed; como el feed de la app trae 93 KB, su firma
+  está bien. Además el mismo juego de 20 parámetros en el feed devuelve 316 KB.
+* **Faltaba un dato del informe del teléfono** (el del intento 2), así que el
+  diagnóstico ahora lo enseña todo: la búsqueda primero, el `connection` de la
+  respuesta (`close` = HTTP/1.1; en HTTP/2 esa cabecera no existe), el feed con
+  los 20 parámetros de la búsqueda encima, el protocolo/TLS negociados
+  (`https://www.cloudflare.com/cdn-cgi/trace`) y una sonda al relay.
+
+**La palanca: App Transport Security.** El `Info.plist` tenía
+`NSAllowsArbitraryLoads = true` (para poder hablar HTTP plano con el relay y con
+CDNs de TLS flojo). Apple documenta que, con ese permiso, «las comprobaciones
+extendidas —como exigir una versión mínima de TLS— quedan desactivadas», y
+**HTTP/2 exige TLS 1.2**. La excepción por dominio es la que evita elegir entre
+una cosa y la otra (documentado en el mismo sitio: «los dominios que
+especifiques en ese diccionario no se ven afectados por el valor de esa clave»,
+aunque el diccionario esté vacío). Así que el `Info.plist` ahora **exige ATS en
+`www.tiktok.com`** (TLS 1.2 + secreto hacia adelante) y deja el permiso global
+para el resto. Si aun así no llegara HTTP/2, el informe dirá qué protocolo y qué
+TLS se negociaron, y quedan dos planes: quitar el permiso global (rompe el relay
+por HTTP plano) o pedir la búsqueda desde un `WKWebView` (WebKit sí negocia
+HTTP/2 y no le afecta ATS en iOS 9).
+
+---
+
 ## 5. Estado de la decisión
 
 * **Navegar (feed, miniaturas, ficha de vídeo en el feed):** resuelto y
@@ -302,9 +357,11 @@ Reproducir: `pip install "curl_cffi<0.8"` y luego
 * **Relay:** **opcional**, solo como plan B (certificado del CDN no confiado en
   iOS 9, o red que corta la conexión). No firma nada: la app le pasa la
   dirección ya firmada.
-* **Buscar:** resuelto y autónomo (2026-10-19). Necesita HTTP/2, la cookie
-  `ttwid` (identidad anónima, de una página pública) y un `msToken` válido; la app
-  consigue las tres sola. Ver **4 quinquies**.
+* **Buscar:** resuelto en Python y en la app, con un matiz importante: la ruta
+  exige **HTTP/2**, la cookie `ttwid` (identidad anónima, de una página pública)
+  y un `msToken` válido. La app consigue las tres sola, pero iOS 9 no le daba
+  HTTP/2 con el `Info.plist` que tenía; ahora se exige ATS en `www.tiktok.com`
+  para que lo negocie. Ver **4 quinquies** y **4 sexies**.
 * **Comentarios y perfiles:** pendientes. Se sabe que la API móvil exige
   `X-Argus`/`X-Ladon` (ver 2.5); no se han vuelto a medir sobre HTTP/2. Los
   comentarios se quedan fuera por ahora; el botón lo explica.
