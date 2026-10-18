@@ -18,6 +18,35 @@ static NSError *TTError(TTCodigoError codigo, NSString *texto) {
                            userInfo:@{ NSLocalizedDescriptionKey : texto }];
 }
 
+// Metodos internos, declarados antes de usarlos para no depender del orden del
+// fichero.
+@interface TTCliente ()
+- (NSString *)firmarPares:(NSArray *)pares;
+- (NSString *)cabecera:(NSString *)nombre de:(NSHTTPURLResponse *)respuesta;
+- (NSString *)msTokenDeRespuesta:(NSHTTPURLResponse *)respuesta;
+- (NSInteger)estadoDeBusqueda:(NSDictionary *)json;
+- (NSArray *)paresDeBusqueda:(NSString *)palabra;
+- (NSArray *)videosDeRespuestaDeBusqueda:(NSDictionary *)json;
+- (void)pedirRuta:(NSString *)ruta
+            pares:(NSArray *)pares
+       completado:(void (^)(NSDictionary *json, NSError *error))completado;
+- (void)pedirRuta:(NSString *)ruta
+            pares:(NSArray *)pares
+     conRespuesta:(void (^)(NSDictionary *json, NSHTTPURLResponse *respuesta,
+                            NSError *error))completado;
+- (void)pedirRutaCrudo:(NSString *)ruta
+                 pares:(NSArray *)pares
+            completado:(void (^)(NSData *datos, NSHTTPURLResponse *respuesta,
+                                 NSError *error))completado;
+- (void)buscarPalabra:(NSString *)palabra
+               intento:(NSInteger)intento
+            completado:(TTBloqueFeed)completado;
+- (void)intentoDeInforme:(NSString *)palabra
+                  numero:(NSInteger)numero
+                  lineas:(NSMutableArray *)lineas
+              completado:(void (^)(NSString *informe))completado;
+@end
+
 @implementation TTCliente
 
 + (instancetype)compartido {
@@ -97,14 +126,13 @@ static NSError *TTError(TTCodigoError codigo, NSString *texto) {
     }];
 }
 
-// Igual que pedirRuta:completado:, pero ademas entrega la respuesta HTTP.  La
-// busqueda lo necesita: cuando TikTok rechaza la peticion (200 con el cuerpo
-// vacio) regala un msToken nuevo en la cabecera x-ms-token, y sin verlo no se
-// puede reintentar.
-- (void)pedirRuta:(NSString *)ruta
-            pares:(NSArray *)pares
-     conRespuesta:(void (^)(NSDictionary *json, NSHTTPURLResponse *respuesta,
-                            NSError *error))completado {
+// Firma, manda y devuelve los bytes tal cual (sin interpretarlos).  La usan
+// pedirRuta:conRespuesta: y el diagnostico de la busqueda, que necesita contar
+// bytes y mirar cabeceras.
+- (void)pedirRutaCrudo:(NSString *)ruta
+                 pares:(NSArray *)pares
+            completado:(void (^)(NSData *datos, NSHTTPURLResponse *respuesta,
+                                 NSError *error))completado {
 
     NSString *firmado = [self firmarPares:pares];
     if (firmado.length == 0) {
@@ -130,53 +158,73 @@ static NSError *TTError(TTCodigoError codigo, NSString *texto) {
     NSURLSessionDataTask *tarea = [[self sesion]
         dataTaskWithRequest:peticion
           completionHandler:^(NSData *datos, NSURLResponse *respuesta, NSError *error) {
-        if (error) {
-            dispatch_async(dispatch_get_main_queue(), ^{
-                completado(nil, nil, TTError(TTErrorRed, error.localizedDescription));
-            });
-            return;
-        }
         NSHTTPURLResponse *http = [respuesta isKindOfClass:[NSHTTPURLResponse class]]
                                   ? (NSHTTPURLResponse *)respuesta : nil;
-        NSInteger codigo = http ? http.statusCode : 0;
-        if (datos.length == 0) {
-            // TikTok contesta 200 con cuerpo vacio cuando marca la peticion
-            // (cabecera tt_orcas_res: 1).  Se dice tal cual para no despistar,
-            // pero se entrega la respuesta: suele traer un msToken nuevo.
-            dispatch_async(dispatch_get_main_queue(), ^{
-                completado(nil, http, TTError(TTErrorVacio,
-                    [NSString stringWithFormat:
-                     @"TikTok respondio vacio (codigo %ld). La ruta esta marcada.", (long)codigo]));
-            });
-            return;
-        }
-        NSError *jerror = nil;
-        id json = [NSJSONSerialization JSONObjectWithData:datos options:0 error:&jerror];
-        if (![json isKindOfClass:[NSDictionary class]]) {
-            dispatch_async(dispatch_get_main_queue(), ^{
-                completado(nil, http, TTError(TTErrorFormato, @"La respuesta no era JSON"));
-            });
-            return;
-        }
         dispatch_async(dispatch_get_main_queue(), ^{
-            completado(json, http, nil);
+            if (error) {
+                completado(nil, http, TTError(TTErrorRed, error.localizedDescription));
+            } else {
+                completado(datos ?: [NSData data], http, nil);
+            }
         });
     }];
     [tarea resume];
 }
 
-#pragma mark - msToken que regala una respuesta
+// Igual que pedirRuta:completado:, pero ademas entrega la respuesta HTTP.  La
+// busqueda lo necesita: cuando TikTok rechaza la peticion (200 con el cuerpo
+// vacio) regala un msToken nuevo en la cabecera x-ms-token, y sin verlo no se
+// puede reintentar.
+- (void)pedirRuta:(NSString *)ruta
+            pares:(NSArray *)pares
+     conRespuesta:(void (^)(NSDictionary *json, NSHTTPURLResponse *respuesta,
+                            NSError *error))completado {
 
-// Lee la cabecera x-ms-token (el nombre puede venir con cualquier caja).
-- (NSString *)msTokenDeRespuesta:(NSHTTPURLResponse *)respuesta {
+    [self pedirRutaCrudo:ruta pares:pares
+              completado:^(NSData *datos, NSHTTPURLResponse *http, NSError *error) {
+        if (error) { completado(nil, http, error); return; }
+
+        if (datos.length == 0) {
+            // TikTok contesta 200 con cuerpo vacio cuando marca la peticion
+            // (cabecera tt_orcas_res: 1).  Se dice tal cual para no despistar,
+            // pero se entrega la respuesta: suele traer un msToken nuevo.
+            NSString *orcas = [self cabecera:@"tt_orcas_res" de:http];
+            completado(nil, http, TTError(TTErrorVacio,
+                [NSString stringWithFormat:@"TikTok respondio vacio (HTTP %ld, 0 B%@).",
+                 (long)(http ? http.statusCode : 0),
+                 orcas.length ? [NSString stringWithFormat:@", orcas=%@", orcas] : @""]));
+            return;
+        }
+
+        NSError *jerror = nil;
+        id json = [NSJSONSerialization JSONObjectWithData:datos options:0 error:&jerror];
+        if (![json isKindOfClass:[NSDictionary class]]) {
+            completado(nil, http, TTError(TTErrorFormato,
+                [NSString stringWithFormat:@"La respuesta no era JSON (%lu B).",
+                 (unsigned long)datos.length]));
+            return;
+        }
+        completado(json, http, nil);
+    }];
+}
+
+#pragma mark - Cabeceras de la respuesta
+
+// Lee una cabecera sin importar con que caja venga el nombre.
+- (NSString *)cabecera:(NSString *)nombre de:(NSHTTPURLResponse *)respuesta {
     if (!respuesta) return @"";
     for (NSString *clave in respuesta.allHeaderFields) {
-        if ([clave caseInsensitiveCompare:@"x-ms-token"] == NSOrderedSame) {
+        if ([clave caseInsensitiveCompare:nombre] == NSOrderedSame) {
             id valor = respuesta.allHeaderFields[clave];
             if ([valor isKindOfClass:[NSString class]]) return valor;
         }
     }
     return @"";
+}
+
+// El msToken que TikTok regala cuando rechaza una peticion.
+- (NSString *)msTokenDeRespuesta:(NSHTTPURLResponse *)respuesta {
+    return [self cabecera:@"x-ms-token" de:respuesta];
 }
 
 #pragma mark - Feed
@@ -230,15 +278,7 @@ static NSError *TTError(TTCodigoError codigo, NSString *texto) {
                intento:(NSInteger)intento
             completado:(TTBloqueFeed)completado {
 
-    NSMutableArray *pares = [NSMutableArray arrayWithArray:[[TTSesion compartida] paresBase]];
-    [pares addObject:@[ @"count", @"12" ]];
-    [pares addObject:@[ @"offset", @"0" ]];
-    [pares addObject:@[ @"is_filter_search", @"0" ]];
-    [pares addObject:@[ @"query_correct_type", @"1" ]];
-    [pares addObject:@[ @"search_source", @"normal_search" ]];
-    [pares addObject:@[ @"keyword", palabra ]];
-
-    [self pedirRuta:@"/api/search/general/full/" pares:pares
+    [self pedirRuta:@"/api/search/general/full/" pares:[self paresDeBusqueda:palabra]
        conRespuesta:^(NSDictionary *json, NSHTTPURLResponse *respuesta, NSError *error) {
 
         // 1) Sin msToken (o con uno caducado) TikTok contesta 200 vacio y regala
@@ -264,41 +304,179 @@ static NSError *TTError(TTCodigoError codigo, NSString *texto) {
 
         if (error) { completado(nil, nil, NO, error); return; }
 
-        // La respuesta mezcla tipos: de los videos interesa data[i].item, que es
-        // el propio itemStruct (a veces va envuelto en item["itemStruct"]).
-        NSArray *datos = json[@"data"];
-        NSMutableArray *videos = [NSMutableArray array];
-        if ([datos isKindOfClass:[NSArray class]]) {
-            for (id nodo in datos) {
-                if (![nodo isKindOfClass:[NSDictionary class]]) continue;
-                NSDictionary *estructura = nil;
-                id item = ((NSDictionary *)nodo)[@"item"];
-                if ([item isKindOfClass:[NSDictionary class]]) {
-                    estructura = [item[@"itemStruct"] isKindOfClass:[NSDictionary class]]
-                                 ? item[@"itemStruct"] : item;
-                } else if ([nodo[@"itemStruct"] isKindOfClass:[NSDictionary class]]) {
-                    estructura = nodo[@"itemStruct"];
-                }
-                if (![estructura isKindOfClass:[NSDictionary class]]) continue;
-                TTVideo *v = [TTVideo desdeItemStruct:estructura];
-                if (v && [v tieneVideo]) [videos addObject:v];
-            }
+        // Si TikTok contesta con un codigo propio (p.ej. 2483 "inicia sesion"),
+        // se dice tal cual en vez de aparentar que no hay resultados.
+        NSInteger estado = [self estadoDeBusqueda:json];
+        if (estado != 0) {
+            NSString *msg = [json[@"status_msg"] isKindOfClass:[NSString class]]
+                            ? json[@"status_msg"] : @"";
+            completado(nil, nil, NO, TTError(TTErrorFormato,
+                [NSString stringWithFormat:@"TikTok contesto %ld: %@", (long)estado, msg]));
+            return;
         }
+
+        NSArray *videos = [self videosDeRespuestaDeBusqueda:json];
         NSString *siguiente = [json[@"cursor"] isKindOfClass:[NSString class]] ? json[@"cursor"] : nil;
         if (!siguiente && [json[@"cursor"] isKindOfClass:[NSNumber class]]) {
             siguiente = [(NSNumber *)json[@"cursor"] stringValue];
         }
         // La busqueda usa has_more (el feed usa hasMore); se aceptan los dos.
         id mas = json[@"has_more"] ?: json[@"hasMore"];
-        BOOL hayMas = [mas boolValue];
-        completado(videos, siguiente, hayMas, nil);
+        completado(videos, siguiente, [mas boolValue], nil);
     }];
+}
+
+// Parametros de la busqueda: los de siempre mas lo que la ruta espera.
+- (NSArray *)paresDeBusqueda:(NSString *)palabra {
+    NSMutableArray *pares = [NSMutableArray arrayWithArray:[[TTSesion compartida] paresBase]];
+    [pares addObject:@[ @"count", @"12" ]];
+    [pares addObject:@[ @"offset", @"0" ]];
+    [pares addObject:@[ @"is_filter_search", @"0" ]];
+    [pares addObject:@[ @"query_correct_type", @"1" ]];
+    [pares addObject:@[ @"search_source", @"normal_search" ]];
+    [pares addObject:@[ @"keyword", palabra ]];
+    return pares;
+}
+
+// Saca los videos de la respuesta.  Mezcla tipos: interesa data[i].item, que es
+// el propio itemStruct (a veces va envuelto en item["itemStruct"]).
+- (NSArray *)videosDeRespuestaDeBusqueda:(NSDictionary *)json {
+    NSMutableArray *videos = [NSMutableArray array];
+    NSArray *datos = json[@"data"];
+    if (![datos isKindOfClass:[NSArray class]]) return videos;
+    for (id nodo in datos) {
+        if (![nodo isKindOfClass:[NSDictionary class]]) continue;
+        NSDictionary *estructura = nil;
+        id item = ((NSDictionary *)nodo)[@"item"];
+        if ([item isKindOfClass:[NSDictionary class]]) {
+            estructura = [item[@"itemStruct"] isKindOfClass:[NSDictionary class]]
+                         ? item[@"itemStruct"] : item;
+        } else if ([nodo[@"itemStruct"] isKindOfClass:[NSDictionary class]]) {
+            estructura = nodo[@"itemStruct"];
+        }
+        if (![estructura isKindOfClass:[NSDictionary class]]) continue;
+        TTVideo *v = [TTVideo desdeItemStruct:estructura];
+        if (v && [v tieneVideo]) [videos addObject:v];
+    }
+    return videos;
 }
 
 // status_code de la respuesta, o 0 cuando no hay JSON que mirar.
 - (NSInteger)estadoDeBusqueda:(NSDictionary *)json {
     id estado = json[@"status_code"];
     return [estado isKindOfClass:[NSNumber class]] ? [estado integerValue] : 0;
+}
+
+#pragma mark - Diagnostico de la busqueda
+
+// Hace la busqueda paso a paso y devuelve un informe de texto: identidad,
+// cookie, msToken, y por cada intento el codigo, los bytes, la cabecera de
+// marca y el status_code.  Es lo que contesta Ajustes -> Probar la busqueda.
+- (void)informeDeBusqueda:(NSString *)palabra
+               completado:(void (^)(NSString *informe))completado {
+
+    NSString *limpia = [palabra stringByTrimmingCharactersInSet:
+                        [NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    if (limpia.length == 0) limpia = @"auron";
+
+    TTSesion *ses = [TTSesion compartida];
+    NSMutableArray *lineas = [NSMutableArray array];
+    [lineas addObject:[NSString stringWithFormat:@"palabra: %@", limpia]];
+    [lineas addObject:[NSString stringWithFormat:@"ttwid antes: %@",
+                       [ses hayIdentidad] ? @"si" : @"NO"]];
+    [lineas addObject:[NSString stringWithFormat:@"cookie antes: %lu car.",
+                       (unsigned long)[ses cookieDeSesion].length]];
+    [lineas addObject:[NSString stringWithFormat:@"msToken antes: %lu car.",
+                       (unsigned long)[ses msToken].length]];
+
+    [ses prepararIdentidad:^(BOOL lograda) {
+        [lineas addObject:[NSString stringWithFormat:@"identidad: %@ (ttwid %@)",
+                           lograda ? @"lograda" : @"NO",
+                           [[TTSesion compartida] hayIdentidad] ? @"si" : @"NO"]];
+        [lineas addObject:[NSString stringWithFormat:@"msToken tras identidad: %lu car.",
+                           (unsigned long)[[TTSesion compartida] msToken].length]];
+
+        // Sondeo al feed: si esto trae datos, la red, el TLS y la firma estan
+        // bien y lo que falla es propio de la ruta de busqueda.
+        NSMutableArray *pares = [NSMutableArray arrayWithArray:[[TTSesion compartida] paresBase]];
+        [pares addObject:@[ @"count", @"6" ]];
+        [pares addObject:@[ @"cursor", @"0" ]];
+        [self pedirRutaCrudo:@"/api/recommend/item_list/" pares:pares
+                  completado:^(NSData *datos, NSHTTPURLResponse *respuesta, NSError *error) {
+            [lineas addObject:[NSString stringWithFormat:@"feed: HTTP %ld, %lu B%@",
+                (long)(respuesta ? respuesta.statusCode : 0), (unsigned long)datos.length,
+                error ? [NSString stringWithFormat:@" (error: %@)", error.localizedDescription] : @""]];
+            [self intentoDeInforme:limpia numero:1 lineas:lineas completado:completado];
+        }];
+    }];
+}
+
+- (void)intentoDeInforme:(NSString *)palabra
+                  numero:(NSInteger)numero
+                  lineas:(NSMutableArray *)lineas
+              completado:(void (^)(NSString *informe))completado {
+
+    [self pedirRutaCrudo:@"/api/search/general/full/" pares:[self paresDeBusqueda:palabra]
+              completado:^(NSData *datos, NSHTTPURLResponse *respuesta, NSError *error) {
+
+        NSLog(@"[Tik9] busqueda %ld: HTTP %ld, %lu B, error=%@", (long)numero,
+              (long)(respuesta ? respuesta.statusCode : 0), (unsigned long)datos.length, error);
+
+        NSInteger estado = 0, cuantos = -1;
+        NSString *mensaje = @"";
+        NSDictionary *json = nil;
+        if (error) {
+            [lineas addObject:[NSString stringWithFormat:@"%ld) error: %@",
+                               (long)numero, error.localizedDescription]];
+        }
+        if (datos.length) {
+            id j = [NSJSONSerialization JSONObjectWithData:datos options:0 error:NULL];
+            if ([j isKindOfClass:[NSDictionary class]]) {
+                json = j;
+                estado = [self estadoDeBusqueda:json];
+                id d = json[@"data"];
+                cuantos = [d isKindOfClass:[NSArray class]] ? (NSInteger)[(NSArray *)d count] : -1;
+                mensaje = [json[@"status_msg"] isKindOfClass:[NSString class]]
+                          ? json[@"status_msg"] : @"";
+            }
+        }
+        if (!error) {
+            NSString *orcas = [self cabecera:@"tt_orcas_res" de:respuesta];
+            [lineas addObject:[NSString stringWithFormat:
+                @"%ld) HTTP %ld  %lu B  orcas=%@  status=%ld  data=%ld  %@",
+                (long)numero, (long)(respuesta ? respuesta.statusCode : 0),
+                (unsigned long)datos.length, orcas.length ? orcas : @"-",
+                (long)estado, (long)cuantos, mensaje]];
+        }
+        if (json) {
+            [lineas addObject:[NSString stringWithFormat:@"   videos leidos: %lu",
+                               (unsigned long)[self videosDeRespuestaDeBusqueda:json].count]];
+        }
+
+        NSString *nuevo = [self msTokenDeRespuesta:respuesta];
+        if (nuevo.length) {
+            [lineas addObject:[NSString stringWithFormat:@"   x-ms-token: %lu car.",
+                               (unsigned long)nuevo.length]];
+        }
+
+        // Mismo reintento que la busqueda real, contado paso a paso.
+        if (numero < 2 && nuevo.length && (error || estado == 2483)) {
+            [[TTSesion compartida] guardarMsTokenAprendido:nuevo];
+            [lineas addObject:@"   -> se guarda el msToken y se repite"];
+            [self intentoDeInforme:palabra numero:numero + 1 lineas:lineas completado:completado];
+            return;
+        }
+        if (numero < 2 && estado == 2483) {
+            [lineas addObject:@"   -> falta identidad: se rehace y se repite"];
+            [[TTSesion compartida] olvidarIdentidad];
+            [[TTSesion compartida] prepararIdentidad:^(BOOL lograda) {
+                (void)lograda;
+                [self intentoDeInforme:palabra numero:numero + 1 lineas:lineas completado:completado];
+            }];
+            return;
+        }
+        completado([lineas componentsJoinedByString:@"\n"]);
+    }];
 }
 
 #pragma mark - Detalle

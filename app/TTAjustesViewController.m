@@ -64,7 +64,7 @@
 - (NSInteger)tableView:(UITableView *)tabla numberOfRowsInSection:(NSInteger)seccion {
     switch (seccion) {
         case 0: return 3;   // modo, relay, probar relay
-        case 1: return 3;   // cookie, probar feed, olvidar
+        case 1: return 4;   // cookie, probar feed, probar busqueda, olvidar
         case 2: return 2;   // fondo, acento
         case 3: return 2;   // version, como funciona
     }
@@ -117,6 +117,9 @@
         if (ruta.row == 1) {
             return [self celdaValorConTitulo:@"Probar el feed" detalle:@"" tabla:tabla];
         }
+        if (ruta.row == 2) {
+            return [self celdaValorConTitulo:@"Probar la busqueda" detalle:@"" tabla:tabla];
+        }
         return [self celdaValorConTitulo:@"Olvidar dispositivo y cookies" detalle:@"" tabla:tabla];
     }
     if (ruta.section == 2) {
@@ -152,7 +155,8 @@
     if (ruta.section == 0 && ruta.row == 2)   { [self probarRelay]; return; }
     if (ruta.section == 1 && ruta.row == 0)   { [self editarCookies]; return; }
     if (ruta.section == 1 && ruta.row == 1)   { [self probarFeed]; return; }
-    if (ruta.section == 1 && ruta.row == 2)   { [self olvidar]; return; }
+    if (ruta.section == 1 && ruta.row == 2)   { [self probarBusqueda]; return; }
+    if (ruta.section == 1 && ruta.row == 3)   { [self olvidar]; return; }
     if (ruta.section == 2 && ruta.row == 0)   { [self elegirFondo]; return; }
     if (ruta.section == 2 && ruta.row == 1)   { [self elegirAcento]; return; }
     if (ruta.section == 3 && ruta.row == 1)   { [self explicar]; return; }
@@ -266,6 +270,37 @@
         [self mostrarAlerta:correcto ? @"El feed funciona" : @"No se pudo cargar el feed"
                       texto:informe];
     }];
+}
+
+// Pregunta por una palabra y hace la busqueda contando cada paso.  Sirve para
+// saber que contesta TikTok exactamente cuando no salen resultados.
+- (void)probarBusqueda {
+    UIAlertController *a = [UIAlertController
+        alertControllerWithTitle:@"Probar la busqueda"
+                         message:@"Escribe una palabra: la app hara la busqueda "
+                                  "contando cada paso (identidad, msToken y lo que "
+                                  "responda TikTok)."
+                  preferredStyle:UIAlertControllerStyleAlert];
+    [a addTextFieldWithConfigurationHandler:^(UITextField *campo) {
+        campo.placeholder = @"auron";
+        campo.text = @"auron";
+        campo.autocapitalizationType = UITextAutocapitalizationTypeNone;
+        campo.autocorrectionType = UITextAutocorrectionTypeNo;
+        campo.clearButtonMode = UITextFieldViewModeWhileEditing;
+    }];
+    [a addAction:[UIAlertAction actionWithTitle:@"Cancelar" style:UIAlertActionStyleCancel
+                                        handler:nil]];
+    [a addAction:[UIAlertAction actionWithTitle:@"Probar" style:UIAlertActionStyleDefault
+        handler:^(UIAlertAction *accion) {
+        NSString *palabra = a.textFields[0].text;
+        [self mostrarEspera:@"Buscando en TikTok..."];
+        [[TTCliente compartido] informeDeBusqueda:palabra
+            completado:^(NSString *informe) {
+            [self ocultarEspera];
+            [self mostrarAlerta:@"Busqueda" texto:informe];
+        }];
+    }]];
+    [self presentViewController:a animated:YES completion:nil];
 }
 
 - (void)olvidar {

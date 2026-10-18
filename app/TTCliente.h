@@ -28,6 +28,12 @@ typedef void (^TTBloqueFeed)(NSArray *videos, NSString *cursor, BOOL hayMas, NSE
 // x-ms-token cuando rechaza una peticion).  Ver HALLAZGOS.md, 4 quinquies.
 - (void)buscarPalabra:(NSString *)palabra completado:(TTBloqueFeed)completado;
 
+// Diagnostico de la busqueda, para Ajustes: la hace paso a paso y devuelve un
+// informe de texto (identidad, cookies, msToken y, por cada intento, el codigo
+// HTTP, los bytes, la cabecera tt_orcas_res y el status_code).
+- (void)informeDeBusqueda:(NSString *)palabra
+               completado:(void (^)(NSString *informe))completado;
+
 // Ficha de un video concreto (api/item/detail).  Puede venir vacia: TikTok ya
 // no la da para muchos videos; el feed trae todo lo necesario.
 - (void)detalleDeVideo:(NSString *)itemId

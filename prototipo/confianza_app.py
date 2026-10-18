@@ -76,18 +76,28 @@ def main():
         ms = r.headers.get("x-ms-token") or ""
         print("2) sondeo -> HTTP %s  %d B  msToken=%d car." % (r.status_code, len(r.content), len(ms)))
 
-    # 3) la busqueda, con el msToken sellado dentro
+    # 3) la busqueda, con el msToken sellado dentro y las cabeceras EXACTAS de
+    #    la app (TTSesion cabecerasBase): UA, Accept, Accept-Language, Referer,
+    #    Origin y la cookie de sesion completa.
+    galletas = "; ".join("%s=%s" % (k, v) for k, v in sorted(dict(s.cookies).items())
+                         if v) or ("ttwid=" + (dict(s.cookies).get("ttwid") or ""))
+    cabeceras_app = {
+        "User-Agent": UA_APP,
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "https://www.tiktok.com/",
+        "Origin": "https://www.tiktok.com",
+        "Cookie": galletas,
+    }
+    print("   cookie enviada: %d car." % len(galletas))
     for cursor in ("0", "12"):
         consulta, _ = X.XGnarly(UA_APP).sign(pares_app(pal, cursor), ms_token=ms)
-        r = s.get(URL_BASE + "?" + consulta,
-                  headers={"User-Agent": UA_APP,
-                           "Accept": "application/json, text/plain, */*",
-                           "Referer": "https://www.tiktok.com/"}, timeout=40)
+        r = s.get(URL_BASE + "?" + consulta, headers=cabeceras_app, timeout=40)
         t = ver("3) busqueda cursor=%s" % cursor, r)
         if len(r.content) > 1000:
             j = json.loads(t)
             for d in (j.get("data") or [])[:4]:
-                v = d.get("aweme_info") or {}
+                v = d.get("item") or d.get("aweme_info") or {}
                 au = (v.get("author") or {}).get("uniqueId", "?")
                 print("      %s | %r | %s" % (au, (v.get("desc") or "")[:34],
                                                ((v.get("video") or {}).get("playAddr") or "")[:46]))

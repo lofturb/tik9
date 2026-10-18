@@ -6,9 +6,25 @@ static NSString * const kDefDispositivo = @"tik9_dispositivo";
 static NSString * const kDefCookies     = @"tik9_cookies";
 static NSString * const kDefMsToken     = @"tik9_mstoken";
 
-// Una pagina publica que entrega la cookie ttwid (la identidad anonima que la
+// Paginas publicas que entregan la cookie ttwid (la identidad anonima que la
 // busqueda exige).  La portada no la da: hay que pedir una pagina de contenido.
-static NSString * const kUrlIdentidad   = @"https://www.tiktok.com/foryou";
+// Se prueban en orden y se para en cuanto llega el ttwid.
+static NSArray *TTUrlsDeIdentidad(void) {
+    return @[ @"https://www.tiktok.com/foryou",
+              @"https://www.tiktok.com/explore",
+              @"https://www.tiktok.com/tag/tiktok" ];
+}
+
+// Carga de identidad en curso: se agrupan las peticiones de varias pantallas.
+static BOOL gPreparandoIdentidad = NO;
+static NSMutableArray *gEsperandoIdentidad = nil;
+
+// Metodos internos, declarados antes de usarlos.
+@interface TTSesion ()
+- (void)pedirIdentidadEn:(NSInteger)indice;
+- (void)terminarIdentidad;
+- (NSString *)valorDeCookieDelAlmacen:(NSString *)clave;
+@end
 
 @implementation TTSesion
 
@@ -92,12 +108,13 @@ static NSString * const kUrlIdentidad   = @"https://www.tiktok.com/foryou";
 }
 
 - (NSString *)msToken {
-    NSString *pegada = [self valorDeCookie:@"msToken"];
-    if (pegada.length) return pegada;
-
-    // El ultimo que regalo TikTok en una cabecera x-ms-token.
+    // El que regalo TikTok manda: es el mas reciente y solo se guarda cuando
+    // rechazo el anterior, asi que si hay uno aprendido es porque hacia falta.
     NSString *aprendida = [[NSUserDefaults standardUserDefaults] stringForKey:kDefMsToken];
     if (aprendida.length) return aprendida;
+
+    NSString *pegada = [self valorDeCookie:@"msToken"];
+    if (pegada.length) return pegada;
 
     // Por si una sesion web previa dejo la cookie en el almacen del sistema.
     NSString *delAlmacen = [self valorDeCookieDelAlmacen:@"msToken"];
@@ -135,20 +152,24 @@ static NSString * const kUrlIdentidad   = @"https://www.tiktok.com/foryou";
 - (void)prepararIdentidad:(void (^)(BOOL))completado {
     if ([self hayIdentidad]) { completado(YES); return; }
 
-    // Una sola carga a la vez, aunque varias pantallas la pidan.
-    static BOOL preparando = NO;
-    static NSMutableArray *pendientes = nil;
-    if (preparando) {
-        if (!pendientes) pendientes = [NSMutableArray array];
-        [pendientes addObject:[completado copy]];
+    if (!gEsperandoIdentidad) gEsperandoIdentidad = [NSMutableArray array];
+    [gEsperandoIdentidad addObject:[completado copy]];
+    if (gPreparandoIdentidad) return;   // ya hay una carga en marcha
+    gPreparandoIdentidad = YES;
+
+    [self pedirIdentidadEn:0];
+}
+
+// Pide la pagina candidata numero 'indice' y, si no dejo ttwid, prueba la
+// siguiente.  Cuando acaba (con o sin exito) avisa a todos los que esperaban.
+- (void)pedirIdentidadEn:(NSInteger)indice {
+    NSArray *urls = TTUrlsDeIdentidad();
+    if ([self hayIdentidad] || indice >= (NSInteger)urls.count) {
+        [self terminarIdentidad];
         return;
     }
-    preparando = YES;
-    if (!pendientes) pendientes = [NSMutableArray array];
-    [pendientes addObject:[completado copy]];
 
-    NSURL *url = [NSURL URLWithString:kUrlIdentidad];
-    NSMutableURLRequest *peticion = [NSMutableURLRequest requestWithURL:url];
+    NSMutableURLRequest *peticion = [NSMutableURLRequest requestWithURL:[NSURL URLWithString:urls[indice]]];
     peticion.HTTPMethod = @"GET";
     peticion.timeoutInterval = 25.0;
     [peticion setValue:[self userAgent] forHTTPHeaderField:@"User-Agent"];
@@ -157,20 +178,29 @@ static NSString * const kUrlIdentidad   = @"https://www.tiktok.com/foryou";
     [peticion setValue:@"es-ES,es;q=0.9,en;q=0.8" forHTTPHeaderField:@"Accept-Language"];
 
     // sharedSession guarda las Set-Cookie en el almacen compartido, que es de
-    // donde las lee hayIdentidad y cookieDeSesion.
+    // donde las leen hayIdentidad y cookieDeSesion.
     NSURLSessionDataTask *tarea = [[NSURLSession sharedSession]
         dataTaskWithRequest:peticion
           completionHandler:^(NSData *datos, NSURLResponse *respuesta, NSError *error) {
-        (void)datos; (void)respuesta; (void)error;
+        (void)datos; (void)respuesta;
+        NSLog(@"[Tik9] identidad %ld: HTTP %ld, ttwid=%@, error=%@", (long)indice,
+              (long)([respuesta isKindOfClass:[NSHTTPURLResponse class]]
+                     ? [(NSHTTPURLResponse *)respuesta statusCode] : 0),
+              [self hayIdentidad] ? @"si" : @"no", error);
         dispatch_async(dispatch_get_main_queue(), ^{
-            BOOL lograda = [self hayIdentidad];
-            NSArray *esperando = [pendientes copy];
-            [pendientes removeAllObjects];
-            preparando = NO;
-            for (void (^bloque)(BOOL) in esperando) bloque(lograda);
+            [self pedirIdentidadEn:indice + 1];
         });
     }];
     [tarea resume];
+}
+
+- (void)terminarIdentidad {
+    BOOL lograda = [self hayIdentidad];
+    NSArray *esperando = [gEsperandoIdentidad copy];
+    [gEsperandoIdentidad removeAllObjects];
+    gPreparandoIdentidad = NO;
+    NSLog(@"[Tik9] identidad terminada: %@", lograda ? @"lograda" : @"NO");
+    for (void (^bloque)(BOOL) in esperando) bloque(lograda);
 }
 
 - (void)olvidarIdentidad {

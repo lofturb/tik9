@@ -15,8 +15,8 @@
 - (NSString *)dispositivoId;
 
 // Token de sesion web.  Cadena vacia cuando no hay.  Se busca, en este orden,
-// en las cookies pegadas a mano, en el ultimo que regalo una respuesta de
-// TikTok (cabecera x-ms-token) y en el almacen de cookies del sistema.
+// en el ultimo que regalo una respuesta de TikTok (cabecera x-ms-token), en las
+// cookies pegadas a mano y en el almacen de cookies del sistema.
 - (NSString *)msToken;
 
 // El User-Agent que se firma.  TIENE que ser el mismo que se envia.
