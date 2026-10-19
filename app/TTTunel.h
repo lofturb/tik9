@@ -59,11 +59,22 @@ typedef struct {
     char error[256];     /* que fallo, en castellano, si algo fallo */
     char tls[96];        /* version de TLS y cifrado negociados, para el informe */
     char huella[192];    /* que partes del saludo de Chrome se pudieron poner */
+    char ecos[1200];     /* resumen de las cabeceras con las que contesto el servidor */
     int verificado;      /* 1 si el certificado se comprobo contra las raices del sistema */
 } tt_tunel_respuesta;
 
 /* 1 si esta version trae el tunel compilado, 0 si no. */
 int tt_tunel_hay(void);
+
+/*
+ * Que partes del saludo de Chrome se mandan (para medir que pieza es la que
+ * cambia el veredicto del borde).  Afecta a las peticiones siguientes:
+ *   0  todo: OCSP y ALPS (por defecto)
+ *   1  sin ALPS
+ *   2  sin ALPS ni OCSP (el saludo de la 1.3.0)
+ *   3  sin OCSP (ALPS si)
+ */
+void tt_tunel_estilo(int estilo);
 
 /* Texto corto con las versiones (BoringSSL / nghttp2), para el informe. */
 void tt_tunel_descripcion(char *salida, size_t tam);

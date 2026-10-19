@@ -626,6 +626,33 @@ incluye grupos y compresión de certificado) para no depender de una sola
 medida. Si con 16 extensiones el JA4 sale `t13d1516h2_8daaf6152771_02713d6af862`,
 la huella queda clavada y la prueba G responde si eso era la barrera.
 
+### 4 undecies. La huella quedó clavada y el borde dijo 403 (2026-10-19)
+
+La 1.3.1 consiguió exactamente lo que buscaba: `ja4=t13d1516h2_8daaf6152771_02713d6af862`,
+idéntico al Chrome de referencia, con la receta completa
+(`0005…4469…ff01`), el Akamai igual (`52d84b11…`) y TLS 1.3 ChaCha20 con el
+certificado verificado. Y aun así **no entró**: el síntoma cambió de `200` con
+`0 B` y `orcas=1` a **`403` con 411 B en todas las rutas de TikTok**, incluida
+`/api/challenge/detail/` (que en la 1.3.0 contestaba 200 y hasta servía la
+portada, 88 KB). Las rutas de otros dominios (tls.peet.ws) siguen contestando
+200: el túnel no está roto.
+
+Eso descarta que las dos extensiones fueran la pieza que faltaba y convierte el
+problema en otro: **el borde tiene una regla que prefiere catorce extensiones a
+dieciséis**, o que detecta algo del saludo completo que un Chrome real no
+presenta así. El `peetprint` difiere (`0c67a524…` frente a `b8ce945a…`), y una
+de las diferencias conocidas es la compresión de certificado: Chrome ofrece
+brotli y zlib (`1|2`), el túnel solo zlib (`1`), porque iOS 9 no trae brotli.
+
+La 1.3.2 no adivina: deja elegir por conexión qué extensiones se mandan
+(`tt_tunel_estilo`) y hace cinco sondas baratas contra
+`/api/challenge/detail/` —saludo completo, sin ALPS, sin ALPS ni OCSP, sin OCSP,
+y sin la cookie— más dos sobre páginas (la portada y la página de resultados).
+Cada sonda escribe el código, el cuerpo recortado y las cabeceras de la
+respuesta. Con eso se sabe qué extensión dispara el 403 y quién lo firma, y se
+puede volver al saludo de la 1.3.0 —el que sí hablaba con TikTok— sin perder lo
+medido.
+
 ## 5. Estado de la decisión
 
 * **Navegar (feed, miniaturas, ficha de vídeo en el feed):** resuelto y
@@ -643,8 +670,9 @@ la huella queda clavada y la prueba G responde si eso era la barrera.
   de iOS 9. El arreglo es el **túnel**: BoringSSL + nghttp2 dentro de la app,
   con el saludo TLS y el HTTP/2 de un Chrome. La 1.3.0 lo afina hasta la huella
   medida y añade tres pruebas (G, H, I) para saber qué pieza falta si aún no
-  entra; la 1.3.1 cierra las dos extensiones que faltaban (ver **4 decies**).
-  Sin relay ni nada fuera del aparato.
+  entra; la 1.3.1 clava el JA4 de Chrome y la 1.3.2 mide qué extensión hace
+  saltar el 403 del borde (ver **4 decies** y **4 undecies**). Sin relay ni nada
+  fuera del aparato.
 * **Comentarios y perfiles:** pendientes. Se sabe que la API móvil exige
   `X-Argus`/`X-Ladon` (ver 2.5); no se han vuelto a medir sobre HTTP/2. Los
   comentarios se quedan fuera por ahora; el botón lo explica.

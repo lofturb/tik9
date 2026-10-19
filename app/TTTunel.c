@@ -69,9 +69,14 @@ typedef struct {
     char orcas[64];
     char ms_token[512];
     char cookie[512];
+    char ecos[1200];
     int cerrado;
     int fallo;
 } tt_conexion;
+
+/* Que partes del saludo se mandan (ver tt_tunel_estilo en TTTunel.h).  Solo lo
+   usa el diagnostico para averiguar que extension dispara el 403 del borde. */
+static int tt_estilo = 0;
 
 /* --- callbacks de nghttp2 ------------------------------------------------- */
 
@@ -139,6 +144,25 @@ static int tt_recibir_cabecera(nghttp2_session *sesion, const nghttp2_frame *mar
             }
             c->cookie[n] = '\0';
             break;
+        }
+    }
+
+    /* Y un resumen de con que contesto el servidor: los 403 de un borde se
+       entienden mucho mejor sabiendo quien firma la respuesta y con que
+       cabeceras.  Se saltan set-cookie (lleva la identidad) y las de fecha y
+       cache, que no dicen nada. */
+    int saltar = (largo_nombre == 10 && memcmp(nombre, "set-cookie", 10) == 0) ||
+                 (largo_nombre == 4 && memcmp(nombre, "date", 4) == 0) ||
+                 (largo_nombre == 7 && memcmp(nombre, "expires", 7) == 0) ||
+                 (largo_nombre == 4 && memcmp(nombre, "vary", 4) == 0) ||
+                 (largo_nombre == 13 && memcmp(nombre, "cache-control", 13) == 0);
+    if (!saltar) {
+        size_t ya = strlen(c->ecos);
+        size_t mostrar = largo_valor < 48 ? largo_valor : 48;
+        if (ya + largo_nombre + mostrar + 6 < sizeof c->ecos) {
+            snprintf(c->ecos + ya, sizeof c->ecos - ya, "%s%.*s: %.*s",
+                     ya ? "; " : "", (int)largo_nombre, (const char *)nombre,
+                     (int)mostrar, (const char *)valor);
         }
     }
     return 0;
@@ -433,8 +457,12 @@ static SSL_CTX *tt_contexto(char *nota, size_t tam) {
        ellas el saludo se queda en 14 extensiones y no es el de un Chrome:
          - 5   (status_request): pedir el OCSP del certificado;
          - 17513 (ALPS): los ajustes de HTTP/2 dentro del propio saludo.
-       Se ponen en tt_saludo, que es donde hay un objeto SSL. */
-    tt_nota(nota, tam, "ocsp, alps");
+       Se ponen en tt_saludo, que es donde hay un objeto SSL; alli se puede
+       quitar cada una por separado con tt_tunel_estilo. */
+    tt_nota(nota, tam, tt_estilo == 0 ? "ocsp, alps"
+                  : tt_estilo == 1 ? "ocsp"
+                  : tt_estilo == 2 ? "sin ocsp ni alps"
+                                   : "alps");
 
     /* La comprobacion del certificado la hace el sistema despues del saludo
        (ver tt_verificar_certificado): aqui no se le pide a BoringSSL, que no
@@ -459,13 +487,18 @@ static SSL *tt_saludo(SSL_CTX *ctx, int fd, const char *host, char *error, size_
        (menos brotli, que iOS 9 no trae). */
     SSL_set_enable_ech_grease(tls, 1);
     SSL_enable_signed_cert_timestamps(tls);
-    /* Las dos que faltaban para clavar las 16 extensiones de Chrome. */
-    SSL_enable_ocsp_stapling(tls);
-    /* El numero viejo de ALPS (17513), que es el que manda el Chrome de 2024;
-       BoringSSL, al dia, usaria el nuevo (17613) y no coincidiria. */
-    SSL_set_alps_use_new_codepoint(tls, 0);
-    (void)SSL_add_application_settings(tls, (const uint8_t *)"h2", 2,
-                                       tt_alps_h2, sizeof tt_alps_h2);
+    /* Las dos que faltaban para clavar las 16 extensiones de Chrome.  Pero,
+       medidas en el aparato, hacen que el borde conteste 403 a TODO en TikTok
+       (1.3.1), asi que se pueden quitar de una en una con tt_tunel_estilo para
+       saber cual es la que molesta. */
+    if (tt_estilo != 2 && tt_estilo != 3) SSL_enable_ocsp_stapling(tls);
+    if (tt_estilo == 0 || tt_estilo == 3) {
+        /* El numero viejo de ALPS (17513), que es el que manda el Chrome de
+           2024; BoringSSL, al dia, usaria el nuevo (17613). */
+        SSL_set_alps_use_new_codepoint(tls, 0);
+        (void)SSL_add_application_settings(tls, (const uint8_t *)"h2", 2,
+                                           tt_alps_h2, sizeof tt_alps_h2);
+    }
 #endif
     int r = SSL_connect(tls);
     if (r != 1) {
@@ -618,6 +651,10 @@ int tt_tunel_hay(void) {
     return 1;
 }
 
+void tt_tunel_estilo(int estilo) {
+    tt_estilo = estilo;
+}
+
 void tt_tunel_descripcion(char *salida, size_t tam) {
     if (!salida || tam == 0) return;
     const nghttp2_info *info = nghttp2_version(0);
@@ -697,6 +734,7 @@ int tt_tunel_pedir(const char *host, const char *ruta,
     snprintf(salida->orcas, sizeof salida->orcas, "%s", conexion.orcas);
     snprintf(salida->ms_token, sizeof salida->ms_token, "%s", conexion.ms_token);
     snprintf(salida->cookie, sizeof salida->cookie, "%s", conexion.cookie);
+    snprintf(salida->ecos, sizeof salida->ecos, "%s", conexion.ecos);
     if (conexion.pasado_de_tope) {
         snprintf(salida->error, sizeof salida->error,
                  "la respuesta pasaba de %d MB y se corto", TT_TUNEL_TOPE_CUERPO / (1024 * 1024));
@@ -717,6 +755,10 @@ int tt_tunel_pedir(const char *host, const char *ruta,
 
 int tt_tunel_hay(void) {
     return 0;
+}
+
+void tt_tunel_estilo(int estilo) {
+    (void)estilo;
 }
 
 void tt_tunel_descripcion(char *salida, size_t tam) {

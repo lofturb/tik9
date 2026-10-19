@@ -77,6 +77,13 @@ static NSError *TTError(TTCodigoError codigo, NSString *texto) {
                            cabeceras:(NSArray *)cabeceras;
 // Un texto apto para ir en una dirección (la palabra buscada, por ejemplo).
 - (NSString *)escapadoDeURL:(NSString *)texto;
+// Un recorte del cuerpo, en una linea, para ver que contesta el borde cuando
+// dice que no (un 403 de Akamai o de TikTok se entiende leyendolo).
+- (NSString *)recorteDeCuerpo:(NSData *)datos;
+// La misma peticion barata con el saludo completo y quitando una pieza cada
+// vez: aisla cual de las extensiones nuevas hace saltar el 403.
+- (void)casoDeSondasPorElTunel:(NSMutableArray *)lineas
+                    completado:(void (^)(void))completado;
 // Mide la huella del tunel contra el oraculo publico tls.peet.ws y la compara
 // con la de un Chrome que si entra.
 - (void)casoDeHuellaPorElTunel:(NSMutableArray *)lineas
@@ -550,6 +557,8 @@ static NSError *TTError(TTCodigoError codigo, NSString *texto) {
                             @"identidadPorElTunel": palabra }];
         [casos addObject:@{ @"etq": @"I huella del tunel",
                             @"huella": @YES }];
+        [casos addObject:@{ @"etq": @"J sondas del borde",
+                            @"sondas": @YES }];
     }
     [casos addObjectsFromArray:@[
         @{ @"etq": @"A tal cual (como la app)", @"intentos": @3,
@@ -605,6 +614,10 @@ static NSError *TTError(TTCodigoError codigo, NSString *texto) {
     }
     if ([caso[@"huella"] boolValue]) {
         [self casoDeHuellaPorElTunel:lineas completado:completado];
+        return;
+    }
+    if ([caso[@"sondas"] boolValue]) {
+        [self casoDeSondasPorElTunel:lineas completado:completado];
         return;
     }
     if ([caso[@"tunel"] boolValue]) {
@@ -703,6 +716,29 @@ static NSError *TTError(TTCodigoError codigo, NSString *texto) {
     return [texto stringByAddingPercentEncodingWithAllowedCharacters:validos] ?: @"";
 }
 
+- (NSString *)recorteDeCuerpo:(NSData *)datos {
+    if (!datos.length) return @"";
+    NSString *texto = [[NSString alloc] initWithData:datos
+                                            encoding:NSUTF8StringEncoding];
+    if (!texto.length) {
+        texto = [[NSString alloc] initWithData:datos
+                                      encoding:NSISOLatin1StringEncoding];
+    }
+    if (!texto.length) return @"(no es texto)";
+    NSUInteger tope = MIN((NSUInteger)220, texto.length);
+    NSMutableString *limpio = [NSMutableString string];
+    unichar previo = 0;
+    for (NSUInteger i = 0; i < tope; i++) {
+        unichar ch = [texto characterAtIndex:i];
+        if (ch == '\n' || ch == '\r' || ch == '\t') ch = ' ';
+        if (ch < 32) continue;
+        if (ch == ' ' && previo == ' ') continue;
+        [limpio appendFormat:@"%C", ch];
+        previo = ch;
+    }
+    return limpio;
+}
+
 // Una peticion por el tunel, ya resuelta a objetos de Objective-C.  Bloquea:
 // se llama desde una cola de fondo.  Las cadenas de las cabeceras tienen que
 // seguir vivas mientras dura la llamada, y lo estan (las lleva el arreglo).
@@ -737,6 +773,7 @@ static NSError *TTError(TTCodigoError codigo, NSString *texto) {
     salida[@"cookie"] = r.cookie[0] ? [NSString stringWithUTF8String:r.cookie] : @"";
     salida[@"tls"] = r.tls[0] ? [NSString stringWithUTF8String:r.tls] : @"";
     salida[@"huella"] = r.huella[0] ? [NSString stringWithUTF8String:r.huella] : @"";
+    salida[@"ecos"] = r.ecos[0] ? [NSString stringWithUTF8String:r.ecos] : @"";
     salida[@"error"] = r.error[0] ? [NSString stringWithUTF8String:r.error] : @"";
 
     tt_tunel_soltar(&r);
@@ -812,6 +849,18 @@ static NSError *TTError(TTCodigoError codigo, NSString *texto) {
             if (ttwid.length) [paso appendFormat:@" ttwid=%lu", (unsigned long)ttwid.length];
             if (json) [paso appendFormat:@" videos=%lu", (unsigned long)videos];
             if (huella.length) [paso appendFormat:@"  huella=%@", huella];
+            // Cuando el borde dice que no, lo util es lo que dice y con que
+            // cabeceras: un 403 sin cuerpo no dice nada, y con el se sabe si
+            // es Akamai, TikTok o el propio TLS.
+            if (estadoHTTP >= 400 || (datos.length && !json)) {
+                NSString *recorte = [self recorteDeCuerpo:datos];
+                if (recorte.length) [paso appendFormat:@"  «%@»", recorte];
+            }
+            NSString *ecos = r[@"ecos"];
+            if (ecos.length && estadoHTTP >= 400) {
+                if (ecos.length > 500) ecos = [ecos substringToIndex:500];
+                [paso appendFormat:@"  [%@]", ecos];
+            }
             if (tls.length) [paso appendFormat:@"  [%@%@]", tls,
                              verificado ? @"" : @", SIN VERIFICAR"];
             if (fallo.length) [paso appendFormat:@" error=%@", fallo];
@@ -831,6 +880,88 @@ static NSError *TTError(TTCodigoError codigo, NSString *texto) {
             }
             [lineas addObject:[NSString stringWithFormat:@"bateria %@: %@",
                                caso[@"etq"], [pasos componentsJoinedByString:@"   "]]];
+            completado();
+        });
+    });
+}
+
+// Sondas baratas contra una ruta publica de TikTok (`/api/challenge/detail/`,
+// que no es la de busqueda y contesta 366 B): la misma peticion con el saludo
+// completo y quitando una pieza cada vez.  En la 1.3.1, anadir OCSP y ALPS
+// convirtio el 200 vacio de la busqueda en un 403 en TODAS las rutas, asi que
+// hay que saber cual de las dos es la que el borde no quiere ver.
+- (void)casoDeSondasPorElTunel:(NSMutableArray *)lineas
+                    completado:(void (^)(void))completado {
+    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+        NSString *ua = [[TTSesion compartida] userAgent];
+        NSString *cookie = [[TTSesion compartida] cabecerasBase][@"Cookie"] ?: @"";
+        NSArray *conCookie = [self cabecerasDeNavegadorConUA:ua
+                                                     referer:@"https://www.tiktok.com/"
+                                                      cookie:cookie];
+        NSArray *sinCookie = [self cabecerasDeNavegadorConUA:ua
+                                                     referer:@"https://www.tiktok.com/"
+                                                      cookie:@""];
+        NSArray *plan = @[
+            @[ @"J1 saludo completo (ocsp+alps), con cookie", @0, conCookie ],
+            @[ @"J2 sin ALPS, con cookie", @1, conCookie ],
+            @[ @"J3 sin ALPS ni OCSP (el de la 1.3.0), con cookie", @2, conCookie ],
+            @[ @"J4 sin OCSP, con cookie", @3, conCookie ],
+            @[ @"J5 saludo completo, sin cookie", @0, sinCookie ],
+        ];
+        NSMutableArray *trozos = [NSMutableArray array];
+        for (NSArray *paso in plan) {
+            tt_tunel_estilo([paso[1] intValue]);
+            NSDictionary *r = [self pedirPorElTunelHost:@"www.tiktok.com"
+                ruta:@"/api/challenge/detail/?challengeName=auron"
+                cabeceras:paso[2]];
+            NSData *datos = r[@"datos"];
+            NSMutableString *linea = [NSMutableString stringWithFormat:@"sonda %@: HTTP %@, %lu B",
+                paso[0], r[@"estado"], (unsigned long)datos.length];
+            NSString *orcas = r[@"orcas"];
+            if (orcas.length) [linea appendFormat:@" orcas=%@", orcas];
+            NSString *recorte = [self recorteDeCuerpo:datos];
+            if (recorte.length && ![r[@"estado"] isEqual:@200]) {
+                [linea appendFormat:@" «%@»", recorte];
+            }
+            NSString *ecos = r[@"ecos"];
+            if (ecos.length && [r[@"estado"] integerValue] >= 400) {
+                if (ecos.length > 420) ecos = [ecos substringToIndex:420];
+                [linea appendFormat:@"  [%@]", ecos];
+            }
+            [trozos addObject:linea];
+        }
+
+        // Dos sondas mas, de otra clase: si el 403 alcanza tambien a las
+        // paginas, y si la pagina de resultados trae algo aprovechable por si
+        // misma (la web es de JavaScript, pero se comprueba en vez de suponer).
+        tt_tunel_estilo(0);
+        NSDictionary *portada = [self pedirPorElTunelHost:@"www.tiktok.com" ruta:@"/"
+                                                cabeceras:conCookie];
+        [trozos addObject:[NSString stringWithFormat:
+            @"sonda J6 portada / con el saludo completo: HTTP %@, %lu B",
+            portada[@"estado"], (unsigned long)[(NSData *)portada[@"datos"] length]]];
+
+        tt_tunel_estilo(2);
+        NSDictionary *pagina = [self pedirPorElTunelHost:@"www.tiktok.com"
+            ruta:@"/search?q=auron" cabeceras:conCookie];
+        NSData *cuerpoPagina = pagina[@"datos"];
+        NSString *textoPagina = [[NSString alloc] initWithData:cuerpoPagina
+                                                      encoding:NSUTF8StringEncoding];
+        NSMutableArray *marcas = [NSMutableArray array];
+        for (NSString *marca in @[ @"itemStruct", @"aweme_list", @"webapp.search",
+                                   @"SIGI_STATE", @"__UNIVERSAL_DATA_FOR_REHYDRATION__" ]) {
+            if (textoPagina && [textoPagina rangeOfString:marca].location != NSNotFound) {
+                [marcas addObject:marca];
+            }
+        }
+        [trozos addObject:[NSString stringWithFormat:
+            @"sonda J7 pagina de resultados (saludo de la 1.3.0): HTTP %@, %lu B, marcas=%@",
+            pagina[@"estado"], (unsigned long)cuerpoPagina.length,
+            marcas.count ? [marcas componentsJoinedByString:@","] : @"ninguna"]];
+
+        tt_tunel_estilo(0);
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [lineas addObjectsFromArray:trozos];
             completado();
         });
     });
@@ -1397,6 +1528,12 @@ static NSError *TTError(TTCodigoError codigo, NSString *texto) {
         veredicto = @"El tunel no llego a responder (mira el error de la prueba G, abajo): "
                     @"eso apunta a la conexion en si (red, DNS, saludo TLS), no a la "
                     @"barrera de TikTok.";
+    } else if (lineaTunel && [lineaTunel rangeOfString:@"HTTP 403"].location != NSNotFound) {
+        veredicto = @"El borde contesta 403 al tunel. En la 1.3.0 (14 extensiones) contestaba "
+                    @"200 vacio en la busqueda y servia las paginas; al anadir OCSP y ALPS "
+                    @"(16 extensiones, JA4 identico a Chrome) paso a 403 en todas las rutas de "
+                    @"TikTok. Las sondas J dicen cual de las dos extensiones lo dispara y el "
+                    @"cuerpo y las cabeceras del 403 dicen quien lo firma.";
     } else if (lineaTunel && huellaIgual) {
         veredicto = @"El tunel ya presenta la misma huella TLS y de HTTP/2 que un Chrome que "
                     @"entra (prueba I), y tampoco es la identidad (probado en la H con un "
