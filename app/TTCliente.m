@@ -546,38 +546,34 @@ static NSError *TTError(TTCodigoError codigo, NSString *texto) {
     //     Chrome que si entra (JA4 y la huella de HTTP/2 de Akamai).
     NSMutableArray *casos = [NSMutableArray array];
     if (tt_tunel_hay()) {
-        [casos addObject:@{ @"etq": @"G por el tunel con el saludo y las cabeceras de Chrome",
+        //  G: el tunel con el saludo de Chrome sin OCSP (15 extensiones).  Con
+        //     OCSP, medido: Akamai contesta 403 a todo.
+        //  G2: el saludo de la 1.3.0 (14 extensiones), que ya hablaba con
+        //     TikTok, para comparar sin la extension nueva.
+        [casos addObject:@{ @"etq": @"G por el tunel, saludo de Chrome sin OCSP",
                             @"intentos": @2,
                             @"ruta": @"/api/search/general/full/",
                             @"pares": [self paresDeBusqueda:palabra],
                             @"palabra": palabra,
                             @"navegador": @YES,
-                            @"tunel": @YES }];
+                            @"tunel": @YES,
+                            @"estiloTunel": @3 }];
+        [casos addObject:@{ @"etq": @"G2 por el tunel, saludo de la 1.3.0",
+                            @"intentos": @2,
+                            @"ruta": @"/api/search/general/full/",
+                            @"pares": [self paresDeBusqueda:palabra],
+                            @"palabra": palabra,
+                            @"navegador": @YES,
+                            @"tunel": @YES,
+                            @"estiloTunel": @2 }];
         [casos addObject:@{ @"etq": @"H identidad nueva pedida por el tunel",
                             @"identidadPorElTunel": palabra }];
         [casos addObject:@{ @"etq": @"I huella del tunel",
                             @"huella": @YES }];
-        [casos addObject:@{ @"etq": @"J sondas del borde",
-                            @"sondas": @YES }];
     }
     [casos addObjectsFromArray:@[
         @{ @"etq": @"A tal cual (como la app)", @"intentos": @3,
            @"ruta": @"/api/search/general/full/",
-           @"pares": [self paresDeBusqueda:palabra] },
-        @{ @"etq": @"B sin Referer ni Origin", @"intentos": @2,
-           @"ruta": @"/api/search/general/full/",
-           @"pares": [self paresDeBusqueda:palabra],
-           @"omitir": @[ @"Referer", @"Origin" ] },
-        @{ @"etq": @"C con el UA de Safari", @"intentos": @2,
-           @"ruta": @"/api/search/general/full/",
-           @"pares": [self paresDeBusqueda:palabra],
-           @"ua": uaSafari },
-        @{ @"etq": @"D UA Safari y declarandose iPad", @"intentos": @2,
-           @"ruta": @"/api/search/general/full/",
-           @"pares": [self paresDeBusqueda:palabra conBase:[self paresBaseDeIPad]],
-           @"ua": uaSafari },
-        @{ @"etq": @"E ruta vieja search/item", @"intentos": @2,
-           @"ruta": @"/api/search/item/full/",
            @"pares": [self paresDeBusqueda:palabra] },
         @{ @"etq": @"F ruta search/user", @"intentos": @2,
            @"ruta": @"/api/search/user/full/",
@@ -805,12 +801,18 @@ static NSError *TTError(TTCodigoError codigo, NSString *texto) {
     NSString *cookie = [[TTSesion compartida] cabecerasBase][@"Cookie"];
     NSArray *cabeceras = [self cabecerasDeNavegadorConUA:ua referer:referer
                                                   cookie:cookie];
+    // Que partes del saludo se mandan (ver TTTunel.h).  Por defecto, todas; las
+    // pruebas de busqueda usan 3 (sin OCSP) porque medido en el aparato: con
+    // OCSP, Akamai contesta 403 a todo.
+    int estilo = caso[@"estiloTunel"] ? [caso[@"estiloTunel"] intValue] : 0;
 
     // El tunel bloquea (hace su propia conexion y espera), asi que va fuera de
     // la cola principal: si no, la app se quedaria congelada mientras prueba.
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+        tt_tunel_estilo(estilo);
         NSDictionary *r = [self pedirPorElTunelHost:@"www.tiktok.com" ruta:ruta
                                           cabeceras:cabeceras];
+        tt_tunel_estilo(0);
         dispatch_async(dispatch_get_main_queue(), ^{
             NSData *datos = r[@"datos"];
             NSInteger estadoHTTP = [r[@"estado"] integerValue];
@@ -1045,6 +1047,8 @@ static NSError *TTError(TTCodigoError codigo, NSString *texto) {
                            lineas:(NSMutableArray *)lineas
                        completado:(void (^)(void))completado {
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+        // Sin OCSP: con el, Akamai contesta 403 (medido, prueba J).
+        tt_tunel_estilo(3);
         NSString *ua = [[TTSesion compartida] userAgent];
         NSArray *sinCookie = [self cabecerasDeNavegadorConUA:ua
                                                     referer:@"https://www.tiktok.com/"
@@ -1118,6 +1122,7 @@ static NSError *TTError(TTCodigoError codigo, NSString *texto) {
             [linea appendString:@"   2) sin ttwid nuevo, no se repite"];
         }
 
+        tt_tunel_estilo(0);
         dispatch_async(dispatch_get_main_queue(), ^{
             if (logrado) self.bateriaLograda = YES;
             [lineas addObject:linea];
@@ -1535,10 +1540,13 @@ static NSError *TTError(TTCodigoError codigo, NSString *texto) {
                     @"TikTok. Las sondas J dicen cual de las dos extensiones lo dispara y el "
                     @"cuerpo y las cabeceras del 403 dicen quien lo firma.";
     } else if (lineaTunel && huellaIgual) {
-        veredicto = @"El tunel ya presenta la misma huella TLS y de HTTP/2 que un Chrome que "
-                    @"entra (prueba I), y tampoco es la identidad (probado en la H con un "
-                    @"ttwid nuevo). Lo que queda es lo que se manda por dentro: la respuesta "
-                    @"completa y las cabeceras, que es donde hay que mirar ahora.";
+        veredicto = @"El tunel presenta la misma huella TLS y de HTTP/2 que un Chrome, y la "
+                    @"busqueda sigue volviendo vacia. Antes de tocar la app, comprueba desde el "
+                    @"PC si la MISMA busqueda trae resultados (prototipo/receta_final.py): el "
+                    @"2026-10-19 TikTok puso a esta IP publica en su reto del WAF y devolvia "
+                    @"vacio a todo el mundo, tambien al PC con Chrome de verdad. Si el PC "
+                    @"tambien vuelve vacio, no hay nada que arreglar en el aparato: hay que "
+                    @"cambiar de red o esperar a que se caiga el reto.";
     } else if (lineaTunel) {
         veredicto = @"El tunel no entra todavia, pero ya se puede medir: la linea «huella del "
                     @"tunel» (prueba I) trae el JA4 y la huella de HTTP/2 de Akamai, y la "

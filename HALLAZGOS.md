@@ -653,6 +653,29 @@ respuesta. Con eso se sabe qué extensión dispara el 403 y quién lo firma, y s
 puede volver al saludo de la 1.3.0 —el que sí hablaba con TikTok— sin perder lo
 medido.
 
+### 4 duodecies. **La IP entera estaba en el reto del WAF** (medido el 2026-10-19)
+
+Las sondas de la 1.3.2 aislaron la extensión: con **OCSP** (`status_request`, la
+`0005`) el borde contesta **403 de Akamai** (`server: AkamaiGHost`,
+`x-cache: TCP_DENIED from a200-82-253-36.deploy.akamaitech`), con y sin cookie;
+**sin OCSP** contesta **200** (con ALPS o sin ella). O sea: ALPS no molesta y
+OCSP, que también manda un Chrome de verdad, aquí dispara una regla. La batería
+de la 1.3.3 usa por eso el saludo **sin OCSP** para buscar (`tt_tunel_estilo(3)`).
+
+Pero el dato que lo cambia todo salió de mirar el PC en el mismo momento: con
+`curl_cffi` imitando a Chrome, desde este ordenador, **la búsqueda también
+devuelve `200` con 0 B y `orcas=1`**, y la portada devuelve 1 462 B con
+`Please wait...`, `slardar_us_waf` y `wafchallengeid`: el **reto del WAF** de
+TikTok. Es decir, TikTok había marcado la **IP pública entera**
+(`154.27.129.31`), no al iPad. Con la red marcada, cualquier comparación
+«teléfono sí / PC no» mide el reto, no la app.
+
+Queda como comprobación previa, `prototipo/ip_limpia.py`: pide la portada y dice
+si la IP está en el reto. Si lo está, no se gasta una instalación; se cambia de
+red (datos del móvil) o se espera a que se caiga. Cuando esté limpia, la 1.3.3
+mide la búsqueda por el túnel con dos saludos (sin OCSP y el de la 1.3.0) y el
+PC sirve de testigo con `prototipo/confianza_app.py`.
+
 ## 5. Estado de la decisión
 
 * **Navegar (feed, miniaturas, ficha de vídeo en el feed):** resuelto y
@@ -670,9 +693,12 @@ medido.
   de iOS 9. El arreglo es el **túnel**: BoringSSL + nghttp2 dentro de la app,
   con el saludo TLS y el HTTP/2 de un Chrome. La 1.3.0 lo afina hasta la huella
   medida y añade tres pruebas (G, H, I) para saber qué pieza falta si aún no
-  entra; la 1.3.1 clava el JA4 de Chrome y la 1.3.2 mide qué extensión hace
-  saltar el 403 del borde (ver **4 decies** y **4 undecies**). Sin relay ni nada
-  fuera del aparato.
+  entra; la 1.3.1 clava el JA4 de Chrome, la 1.3.2 mide qué extensión hace
+  saltar el 403 del borde y la 1.3.3 busca sin OCSP y con dos saludos (ver
+  **4 decies**, **4 undecies** y **4 duodecies**). Sin relay ni nada fuera del
+  aparato. **Ojo:** antes de medir hay que comprobar que la IP pública no está
+  en el reto del WAF (`prototipo/ip_limpia.py`); el 2026-10-19 lo estaba y
+  devolvía vacío incluso al PC con Chrome de verdad.
 * **Comentarios y perfiles:** pendientes. Se sabe que la API móvil exige
   `X-Argus`/`X-Ladon` (ver 2.5); no se han vuelto a medir sobre HTTP/2. Los
   comentarios se quedan fuera por ahora; el botón lo explica.
