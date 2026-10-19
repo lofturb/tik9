@@ -1,4 +1,4 @@
-﻿name: Construir IPA (iOS 9.3.5 / armv7)
+name: Construir IPA (iOS 9.3.5 / armv7)
 
 # Se ejecuta al pulsar "Run workflow" o al subir cambios.
 on:
@@ -175,6 +175,15 @@ jobs:
           # dpkg-deb no acepta un guion de mantenimiento que no sea ejecutable,
           # y en Windows el bit de ejecucion no viaja en el fichero.
           chmod 755 layout/DEBIAN/postinst
+          # Un editor de Windows puede dejar marca de orden de bytes (BOM) al
+          # principio de control, y entonces el generador del paquete no ve el
+          # campo Package en la primera linea y se para con un error que no
+          # explica nada.  Se quita y se avisa, para saber que ha pasado.
+          if [ "$(head -c 3 control | od -An -tx1 | tr -d ' \n')" = "efbbbf" ]; then
+            echo "aviso: app/control traia marca de orden de bytes (BOM); se quita"
+            tail -c +4 control > control.sinbom
+            mv control.sinbom control
+          fi
           make package FINALPACKAGE=1 PACKAGE_FORMAT=deb
           mkdir -p /tmp/deb
           cp packages/*.deb /tmp/deb/
