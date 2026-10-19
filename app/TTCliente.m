@@ -1055,6 +1055,7 @@ static NSError *TTError(TTCodigoError codigo, NSString *texto) {
     // asi que solo se miran las lineas de la bateria y de las busquedas.
     BOOL salieron = NO;
     NSString *variante = nil;
+    BOOL ganoSinVerificar = NO;
     for (NSString *linea in lineas) {
         BOOL esBusqueda = [linea hasPrefix:@"bateria "] || [linea hasPrefix:@"busqueda("];
         if (!esBusqueda) continue;
@@ -1062,6 +1063,7 @@ static NSError *TTError(TTCodigoError codigo, NSString *texto) {
         if (videos.location == NSNotFound) continue;
         if ([linea substringFromIndex:videos.location + 7].integerValue <= 0) continue;
         salieron = YES;
+        ganoSinVerificar = ([linea rangeOfString:@"SIN VERIFICAR"].location != NSNotFound);
         if ([linea hasPrefix:@"bateria "]) {
             NSRange dosPuntos = [linea rangeOfString:@":"];
             if (dosPuntos.location != NSNotFound && dosPuntos.location > 8) {
@@ -1073,15 +1075,39 @@ static NSError *TTError(TTCodigoError codigo, NSString *texto) {
         break;
     }
 
+    // Lo que dijo la prueba del tunel (el caso G), que es la que se investiga.
+    NSString *lineaTunel = nil;
+    for (NSString *linea in lineas) {
+        if ([linea hasPrefix:@"bateria G"]) { lineaTunel = linea; break; }
+    }
+
     NSString *veredicto;
     if (salieron) {
-        veredicto = variante.length
-            ? [NSString stringWithFormat:@"La busqueda si funciona, con la variante "
-               @"«%@»: esa es la que hay que usar.", variante]
-            : @"La busqueda devuelve videos: funciona.";
+        BOOL fueElTunel = (variante.length > 0 && [variante hasPrefix:@"G"]);
+        NSMutableString *texto = [NSMutableString stringWithFormat:
+            @"La busqueda devuelve videos con la variante «%@».",
+            variante.length ? variante : @"?"];
+        if (fueElTunel) {
+            [texto appendString:@" El tunel (BoringSSL + HTTP/2) es la pieza que hacia "
+                                 @"falta: la barrera miraba la huella de la conexion, no lo "
+                                 @"que se pide."];
+        }
+        if (ganoSinVerificar) {
+            [texto appendString:@" OJO: esa conexion no se pudo comprobar contra las raices "
+                                 @"del sistema; antes de darla por buena hay que mirar por que."];
+        }
+        veredicto = texto;
     } else if ([todo rangeOfString:@"certificado falso: HTTP"].location != NSNotFound) {
         veredicto = @"Hay un intermediario (proxy, VPN o bloqueador) firmando los "
                     @"certificados; la busqueda no puede funcionar hasta quitarlo.";
+    } else if (lineaTunel && [lineaTunel rangeOfString:@"error="].location != NSNotFound) {
+        veredicto = @"El tunel no llego a responder (mira el error de la prueba G, abajo): "
+                    @"eso apunta a la conexion en si (red, DNS, saludo TLS), no a la "
+                    @"barrera de TikTok.";
+    } else if (lineaTunel) {
+        veredicto = @"El tunel tampoco entra (orcas=1 tambien con el saludo de Chrome): la "
+                    @"barrera no se conforma con el TLS y el HTTP/2, hay que seguir afinando "
+                    @"la huella (orden de cabeceras, ajustes de HTTP/2, mas extensiones).";
     } else if ([todo rangeOfString:@"conn=keep-alive"].location != NSNotFound) {
         veredicto = @"Las peticiones van por HTTP/1.1 y la busqueda necesita HTTP/2. "
                     @"Compara el eco de protocolo con la misma direccion en Safari del "

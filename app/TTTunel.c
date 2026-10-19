@@ -11,11 +11,11 @@
  *         cabeceras, ventana inicial, ventana de conexion) en vez de los de
  *         Apple, y con las cabeceras en el orden de un navegador.
  *
- * La verificacion del certificado se hace contra las raices del sistema
- * (Security.framework), que es lo que usa el aparato para todo lo demas.  Si el
- * certificado no verifica, se reintenta sin verificar y se deja anotado en la
- * respuesta (verificado=0): en la fase de medida interesa saber si la conexion
- * pasa, y el informe lo dice en voz alta.
+ * La verificacion del certificado la hace el sistema: en iOS no hay forma de
+ * montarle a BoringSSL las raices del aparato (Apple no las da), asi que se
+ * termina el saludo TLS y despues se le pasa la cadena y el nombre del servidor
+ * a SecTrustEvaluate, que es lo mismo que hace el sistema en cada conexion.
+ * Ver tt_verificar_certificado en TTTunel.c.
  *
  * Todo esto se compila solo si la construccion ha preparado las bibliotecas
  * (TT_TUNEL=1); si no, quedan las funciones de abajo devolviendo "no hay".
@@ -44,7 +44,7 @@
 
 #include <openssl/err.h>
 #include <openssl/ssl.h>
-#include <openssl/x509v3.h>
+#include <openssl/x509.h>
 
 #if __has_include(<nghttp2/nghttp2.h>)
 #include <nghttp2/nghttp2.h>
@@ -152,30 +152,83 @@ static int tt_cerrado(nghttp2_session *sesion, int32_t flujo, uint32_t codigo,
 
 /* --- certificados --------------------------------------------------------- */
 
-/* Raices de confianza del aparato, metidas en un almacen de BoringSSL. */
-static X509_STORE *tt_almacen_de_raices(void) {
-    X509_STORE *almacen = X509_STORE_new();
-    if (!almacen) return NULL;
+/*
+ * Comprueba el certificado del servidor contra las raices del sistema.
+ *
+ * En iOS no se puede montar un almacen de raices para BoringSSL: Apple no da
+ * acceso a los certificados de las raices (SecTrustCopyAnchorCertificates esta
+ * marcada como "not available on iOS" en su propia cabecera).  Lo que si hay es
+ * lo que usa el sistema en cada conexion: SecTrustCreateWithCertificates +
+ * SecTrustEvaluate.  Se le pasa la cadena tal cual la mando el servidor y el
+ * nombre del servidor, y decide el sistema, con sus raices y sus reglas.
+ *
+ * Devuelve 1 si el sistema da la cadena por buena, 0 si no, y en 'detalle' deja
+ * el motivo en castellano.
+ */
+static int tt_verificar_certificado(SSL *tls, const char *host,
+                                    char *detalle, size_t tam) {
+    detalle[0] = '\0';
 
-    CFArrayRef anclas = SecTrustCopyAnchorCertificates();
-    if (!anclas) return almacen;
-    CFIndex cuantas = CFArrayGetCount(anclas);
-    for (CFIndex i = 0; i < cuantas; i++) {
-        SecCertificateRef certificado =
-            (SecCertificateRef)CFArrayGetValueAtIndex(anclas, i);
-        if (!certificado) continue;
-        CFDataRef datos = SecCertificateCopyData(certificado);
-        if (!datos) continue;
-        const unsigned char *p = CFDataGetBytePtr(datos);
-        X509 *x = d2i_X509(NULL, &p, (long)CFDataGetLength(datos));
-        if (x) {
-            X509_STORE_add_cert(almacen, x);
-            X509_free(x);
-        }
-        CFRelease(datos);
+    STACK_OF(X509) *cadena = SSL_get_peer_full_cert_chain(tls);
+    if (!cadena || sk_X509_num(cadena) == 0) {
+        snprintf(detalle, tam, "el servidor no mando certificado");
+        return 0;
     }
-    CFRelease(anclas);
-    return almacen;
+
+    CFMutableArrayRef certificados =
+        CFArrayCreateMutable(NULL, 0, &kCFTypeArrayCallBacks);
+    if (!certificados) {
+        snprintf(detalle, tam, "sin memoria para la comprobacion");
+        return 0;
+    }
+    for (int i = 0; i < sk_X509_num(cadena); i++) {
+        X509 *x = sk_X509_value(cadena, i);
+        int largo = i2d_X509(x, NULL);
+        if (largo <= 0) continue;
+        unsigned char *der = malloc((size_t)largo);
+        if (!der) continue;
+        unsigned char *p = der;
+        i2d_X509(x, &p);
+        CFDataRef datos = CFDataCreate(NULL, der, largo);
+        free(der);
+        if (!datos) continue;
+        SecCertificateRef certificado = SecCertificateCreateWithData(NULL, datos);
+        CFRelease(datos);
+        if (certificado) {
+            CFArrayAppendValue(certificados, certificado);
+            CFRelease(certificado);
+        }
+    }
+
+    CFStringRef nombre = CFStringCreateWithCString(NULL, host, kCFStringEncodingUTF8);
+    /* 1 = es un servidor (la politica tambien comprueba el nombre). */
+    SecPolicyRef politica = SecPolicyCreateSSL(1, nombre);
+    if (nombre) CFRelease(nombre);
+
+    SecTrustRef confianza = NULL;
+    OSStatus fallo = SecTrustCreateWithCertificates(certificados, politica, &confianza);
+    CFRelease(certificados);
+    if (politica) CFRelease(politica);
+
+    int bien = 0;
+    if (fallo != errSecSuccess) {
+        snprintf(detalle, tam, "no se pudo montar la comprobacion (%d)", (int)fallo);
+    } else {
+        SecTrustResultType resultado = kSecTrustResultInvalid;
+        fallo = SecTrustEvaluate(confianza, &resultado);
+        if (fallo != errSecSuccess) {
+            snprintf(detalle, tam, "el sistema no pudo evaluar la cadena (%d)",
+                     (int)fallo);
+        } else if (resultado == kSecTrustResultProceed ||
+                   resultado == kSecTrustResultUnspecified) {
+            bien = 1;
+        } else {
+            snprintf(detalle, tam, "el sistema no da por buena la cadena (resultado %d)",
+                     (int)resultado);
+        }
+    }
+    if (confianza) CFRelease(confianza);
+    return bien;
 }
 
 /* --- conexion ------------------------------------------------------------- */
@@ -234,11 +287,8 @@ static int tt_conectar(const char *host, char *error, size_t tam) {
     return elegido;
 }
 
-/* Arma el contexto TLS con la huella de Chrome.  La unica diferencia entre
-   verificar y no verificar es la comprobacion del certificado: el saludo TLS
-   (cifrados, curvas, GREASE, extensiones) es identico en los dos casos, que es
-   lo que la barrera mira. */
-static SSL_CTX *tt_contexto(int verificar) {
+/* Arma el contexto TLS con la huella de Chrome. */
+static SSL_CTX *tt_contexto(void) {
     SSL_CTX *ctx = SSL_CTX_new(TLS_method());
     if (!ctx) return NULL;
 
@@ -270,17 +320,10 @@ static SSL_CTX *tt_contexto(int verificar) {
     static const unsigned char protocolos[] = { 2, 'h', '2', 8, 'h', 't', 't', 'p', '/', '1', '.', '1' };
     SSL_CTX_set_alpn_protos(ctx, protocolos, sizeof protocolos);
 
-    if (verificar) {
-        X509_STORE *raices = tt_almacen_de_raices();
-        if (raices) {
-            SSL_CTX_set_cert_store(ctx, raices);   /* el contexto se queda con el */
-            SSL_CTX_set_verify(ctx, SSL_VERIFY_PEER, NULL);
-        } else {
-            SSL_CTX_set_verify(ctx, SSL_VERIFY_NONE, NULL);
-        }
-    } else {
-        SSL_CTX_set_verify(ctx, SSL_VERIFY_NONE, NULL);
-    }
+    /* La comprobacion del certificado la hace el sistema despues del saludo
+       (ver tt_verificar_certificado): aqui no se le pide a BoringSSL, que no
+       tiene las raices del aparato. */
+    SSL_CTX_set_verify(ctx, SSL_VERIFY_NONE, NULL);
     return ctx;
 }
 
@@ -293,21 +336,12 @@ static SSL *tt_saludo(SSL_CTX *ctx, int fd, const char *host, char *error, size_
     }
     SSL_set_fd(tls, fd);
     SSL_set_tlsext_host_name(tls, host);
-#ifdef OPENSSL_IS_BORINGSSL
-    SSL_set1_host(tls, host);            /* comprueba el nombre del certificado */
-#endif
     int r = SSL_connect(tls);
     if (r != 1) {
-        long motivo = SSL_get_verify_result(tls);
         unsigned long cola = ERR_get_error();
         char texto[160] = "";
-        if (cola) {
-            ERR_error_string_n(cola, texto, sizeof texto);
-        }
-        snprintf(error, tam, "el saludo TLS fallo (%s%s%s)",
-                 texto,
-                 motivo != X509_V_OK ? "; certificado: " : "",
-                 motivo != X509_V_OK ? X509_verify_cert_error_string(motivo) : "");
+        if (cola) ERR_error_string_n(cola, texto, sizeof texto);
+        snprintf(error, tam, "el saludo TLS fallo (%s)", texto);
         SSL_free(tls);
         ERR_clear_error();
         return NULL;
@@ -480,7 +514,7 @@ int tt_tunel_pedir(const char *host, const char *ruta,
     }
 
     ERR_clear_error();
-    SSL_CTX *ctx = tt_contexto(1);
+    SSL_CTX *ctx = tt_contexto();
     if (!ctx) {
         snprintf(salida->error, sizeof salida->error, "no se pudo crear el contexto TLS");
         return -1;
@@ -493,37 +527,26 @@ int tt_tunel_pedir(const char *host, const char *ruta,
     }
 
     SSL *tls = tt_saludo(ctx, fd, host, salida->error, sizeof salida->error);
-    salida->verificado = (tls != NULL);
-
-    if (!tls) {
-        /* Segundo intento: puede que lo unico que falle sea el certificado
-           (raices que no cargan, reloj del aparato, etc.).  Se abre conexion
-           nueva -- la anterior puede haber quedado inservible -- y se repite el
-           saludo sin verificar, dejandolo dicho en el informe. */
-        char primero[256];
-        snprintf(primero, sizeof primero, "%s", salida->error);
-        close(fd);
-        fd = -1;
-        SSL_CTX *sin_verificar = tt_contexto(0);
-        if (sin_verificar) {
-            fd = tt_conectar(host, salida->error, sizeof salida->error);
-            if (fd >= 0) {
-                tls = tt_saludo(sin_verificar, fd, host, salida->error,
-                                sizeof salida->error);
-                if (tls) {
-                    salida->verificado = 0;
-                    snprintf(salida->error, sizeof salida->error,
-                             "sin verificar certificado (%s)", primero);
-                }
-            }
-            SSL_CTX_free(sin_verificar);
-        }
-    }
     SSL_CTX_free(ctx);
 
     if (!tls) {
         if (fd >= 0) close(fd);
         return -1;
+    }
+
+    /* El saludo TLS ya esta hecho (BoringSSL no comprueba certificados: no
+       tiene las raices del aparato).  La comprobacion de verdad la hace ahora
+       el sistema, con la cadena que mando el servidor y su nombre.  Si no da la
+       cadena por buena, se sigue con la peticion -- en esta version el objetivo
+       es medir si la conexion pasa la barrera, y el informe lo dice en voz
+       alta -- pero NI SE DA POR BUENA: la app lo marca como no verificado y lo
+       cuenta en el informe.  Cuando el tunel pase a usarse para la busqueda de
+       verdad, sin certificado verificado no se mandara nada (ni la cookie). */
+    char motivo[200] = "";
+    salida->verificado = tt_verificar_certificado(tls, host, motivo, sizeof motivo);
+    if (!salida->verificado) {
+        snprintf(salida->error, sizeof salida->error,
+                 "sin verificar el certificado: %s", motivo);
     }
 
     const unsigned char *negociado = NULL;

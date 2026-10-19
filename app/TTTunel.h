@@ -9,8 +9,14 @@
  * Este modulo habla con TikTok usando:
  *   - BoringSSL, la biblioteca TLS de Chrome (con su lista de cifrados, sus
  *     curvas y GREASE), que es la que tiene por buena la barrera;
- *   - nghttp2, para armario HTTP/2 con los ajustes de un navegador (ventana
+ *   - nghttp2, para armar HTTP/2 con los ajustes de un navegador (ventana
  *     grande, prioridades, etc.) y no con los de Apple de 2015.
+ *
+ * La comprobacion del certificado no la puede hacer BoringSSL: en iOS no hay
+ * acceso a las raices del sistema (SecTrustCopyAnchorCertificates esta marcada
+ * como no disponible en iOS).  Asi que se termina el saludo TLS y se le pasa la
+ * cadena y el nombre del servidor a SecTrustEvaluate, que es exactamente lo que
+ * hace el sistema en cada conexion.
  *
  * Solo se usa para las rutas vetadas (la busqueda).  El feed, el detalle y las
  * paginas siguen yendo por NSURLSession, que funciona bien y trae todas las
