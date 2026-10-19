@@ -124,9 +124,9 @@ jobs:
       #  Si la preparacion fallara, el script deja un aviso y la app se compila
       #  sin tunel (el diagnostico lo dice): un problema aqui no tumba el build.
       # ---------------------------------------------------------------------
-      - name: Cachear el tunel compilado
+      - name: Recuperar el tunel ya compilado
         id: cache-tunel
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
           path: deps
           key: tunel-${{ runner.os }}-armv7-ios9-v2
@@ -143,6 +143,16 @@ jobs:
             exit 1
           fi
 
+      # Se guarda el tunel en cuanto esta hecho, aunque despues falle otra cosa:
+      # compilar BoringSSL cuesta unos minutos y no tiene sentido repetirlo cada
+      # vez que se itera sobre la app.
+      - name: Guardar el tunel compilado
+        if: ${{ always() && steps.cache-tunel.outputs.cache-hit != 'true' && hashFiles('deps/lib/libssl.a') != '' }}
+        uses: actions/cache/save@v4
+        with:
+          path: deps
+          key: tunel-${{ runner.os }}-armv7-ios9-v2
+
       - name: Comprobar que el tunel esta listo
         run: |
           set -euo pipefail
@@ -152,6 +162,7 @@ jobs:
           test -f "$TUNEL_DIR/lib/libnghttp2.a"
           test -f "$TUNEL_DIR/include/openssl/ssl.h"
           test -f "$TUNEL_DIR/include/nghttp2/nghttp2.h"
+          test -f "$TUNEL_DIR/include/nghttp2/nghttp2ver.h"
 
       # El .deb es el camino de instalacion mas firme en un aparato con
       # jailbreak: dpkg copia la app a /Applications y el postinst refresca

@@ -16,8 +16,10 @@
 
 #include <stdlib.h>
 
+// libc++ abre su espacio como "inline namespace __1": hay que abrirlo igual,
+// que si no el compilador se queja (-Winline-namespace-reopened-noninline).
 namespace std {
-namespace __1 {
+inline namespace __1 {
 
 __attribute__((noreturn)) void __throw_bad_optional_access() {
     abort();

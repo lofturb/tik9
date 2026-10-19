@@ -188,7 +188,17 @@ if [ ! -f "$DESTINO/lib/libnghttp2.a" ]; then
     fi
     cp "$ESTATICA" "$DESTINO/lib/libnghttp2.a"
     cp -R "$TRABAJO/nghttp2/lib/includes/nghttp2" "$DESTINO/include/"
+    # nghttp2ver.h no esta en el codigo: lo genera CMake al configurar, asi que
+    # vive en el arbol de compilacion.  Sin el, no compila ni una linea que use
+    # nghttp2.h.
+    VERSION_H="$(find "$TRABAJO/nghttp2" -name 'nghttp2ver.h' | head -n 1)"
+    if [ -z "$VERSION_H" ]; then
+        echo "No encuentro nghttp2ver.h, que se genera al configurar"
+        exit 1
+    fi
+    cp "$VERSION_H" "$DESTINO/include/nghttp2/"
     echo "nghttp2 listo: $(ls -l "$DESTINO/lib/libnghttp2.a" | awk '{print $5}') bytes"
+    ls "$DESTINO/include/nghttp2"
 else
     echo "=== nghttp2 (ya compilado, de la cache) ==="
 fi
