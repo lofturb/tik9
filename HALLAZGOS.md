@@ -390,20 +390,67 @@ app) dejando relajados solo los CDNs de TikTok. Es el cambio que queda por proba
 de verdad, porque la excepción por dominio **no** bastaba mientras el permiso
 global siguiera puesto.
 
-**Plan B si el sistema no negocia h2 ni así.** Dos salidas sin depender de
-CFNetwork: pedir la búsqueda desde un `WKWebView` (WebKit trae su propia pila), o
-el **relay** (que sí hace h2 desde Python y devuelve el resultado al teléfono por
-HTTP/1.1). Ojo: con ATS estricto el relay por **HTTP plano deja de valer en
-iOS 9** (`NSAllowsLocalNetworking` solo existe de iOS 10 en adelante), así que en
-ese camino el relay tendría que ir por HTTPS con un certificado de confianza —
-lo que ya monta `tools/generar_certificados.py` — o quedarse como está en
-dispositivos nuevos.
+**La causa (18/10/2026, medida): un parche de TLS del propio aparato.**
+Como desde dentro del sistema no se puede ver qué ALPN se ofrece, se puso un
+**espía de saludos TLS** en el PC (`tools/espiar_clienthello.py`, escucha en un
+puerto y cuenta lo que trae el ClientHello; el certificado no hace falta, porque
+el saludo llega antes de que nadie lo mire):
 
-El informe de la búsqueda deja además esta pista para comparar dentro del propio
-teléfono: la misma traza abierta **en Safari**
-(`https://www.cloudflare.com/cdn-cgi/trace?tik9=safari`). Si en Safari sale
-`http/2` y en la app `http/1.1`, la diferencia está en la app; si sale `http/1.1`
-en los dos, está en el sistema.
+```powershell
+python tools\espiar_clienthello.py --puerto 8443     # y en el aparato: https://<ip-del-PC>:8443/
+```
+
+Y al abrir esa dirección desde el **Safari del iPad** (iOS 9.3.6, iPad mini 1)
+llegaron **dos saludos distintos** desde la misma IP:
+
+```
+visita desde 192.168.1.2
+  ALPN ofrecido : h2, h2-16, h2-15, h2-14, spdy/3.1, spdy/3, http/1.1
+  versiones TLS : TLS1.2      grupos: secp256r1, secp384r1, secp521r1
+  --> OFRECE HTTP/2          <-- la pila del sistema: SI sabe HTTP/2
+
+visita desde 192.168.1.2
+  ALPN ofrecido : (ninguno)
+  versiones TLS : TLS1.3, TLS1.2, TLS1.1, TLS1.0
+  grupos        : x25519, secp256r1, x448, secp521r1, secp384r1
+  cifrados      : 31 (TLS_AES_256_GCM_SHA384, ChaCha20, ...)
+  --> NO ofrece HTTP/2       <-- pila moderna (OpenSSL), SIN ALPN
+```
+
+De ahí sale todo lo demás:
+
+* **iOS 9 sí ofrece h2** (`h2`, borradores `h2-16/15/14` y SPDY: la pila de 2015).
+  El "el sistema no negocia h2" nunca fue verdad.
+* **El que no puede hablar h2 es el otro**: sin ALPN, el protocolo no se puede
+  pactar, y el servidor tiene que contestar HTTP/1.1. Ese saludo es exactamente
+  lo que describía la traza de Cloudflare (`tls=TLSv1.3 kex=X25519 http=http/1.1`,
+  que es lo mismo que contesta a cualquier cliente sin ALPN: medido desde el PC
+  con el Python por defecto).
+* **Es un parche de TLS instalado en el aparato, no un proxy.** En Cydia están
+  `tlsfix` y `safarifix` (los instaló el dueño). Un parche así le da TLS moderno
+  a un iOS viejo —de ahí el `TLSv1.3` imposible— pero **no implementa ALPN**, así
+  que todo el HTTPS del iPad baja a HTTP/1.1. Encaja con lo demás: la cadena de
+  certificados de TikTok es la auténtica y `self-signed.badssl.com` se rechaza
+  (no hay nadie firmando certificados: es la propia pila del cliente, sustituida),
+  y el arranque con volumen-arriba (que desactiva tweaks de Substrate) **no** lo
+  quita, porque es un paquete que parchea el sistema, no un tweak.
+* **Firma para reconocerlo sin espía**: en iOS 9, un `tls=TLSv1.3` en la traza es
+  imposible; si aparece, hay un parche de TLS poniéndose en medio (y el
+  `conn=keep-alive` de las respuestas de TikTok es la consecuencia).
+
+Arreglo: **desinstalar `tlsfix`** (y `safarifix` si va con él) y reiniciar. Sin
+él, el iPad negocia TLS 1.2 + h2 por su cuenta y la búsqueda tiene la ruta que
+necesita. La app no pierde nada: los CDNs de vídeo y la API cumplen ATS de sobra
+(medido arriba), así que no necesita el parche.
+
+**Plan B si aun así no hubiera h2.** Dos salidas sin depender de CFNetwork: pedir
+la búsqueda desde un `WKWebView` (WebKit trae su propia pila), o el **relay** (que
+sí hace h2 desde Python y devuelve el resultado al teléfono por HTTP/1.1). Ojo:
+con ATS estricto el relay por **HTTP plano deja de valer en iOS 9**
+(`NSAllowsLocalNetworking` solo existe de iOS 10 en adelante), así que en ese
+camino el relay tendría que ir por HTTPS con un certificado de confianza — lo que
+ya monta `tools/generar_certificados.py` — o quedarse como está en dispositivos
+nuevos.
 
 ---
 

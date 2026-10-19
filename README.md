@@ -420,6 +420,31 @@ teclearlo. El de la búsqueda empieza por `VEREDICTO:` y luego cuenta el sistema
 el proxy, el protocolo negociado, los certificados y, por último, la búsqueda, el
 feed y el relay.
 
+#### Si la búsqueda vuelve vacía (200 con 0 bytes)
+
+La búsqueda de TikTok sólo tiene ruta por **HTTP/2**; el *feed* funciona por
+HTTP/1.1 también. Así que ese síntoma (200, 0 bytes, cabecera `tt_orcas_res: 1`,
+mientras el feed trae sus vídeos) significa casi siempre lo mismo: **las
+peticiones del dispositivo van por HTTP/1.1**.
+
+En iOS 9 eso no debería pasar (su pila sí ofrece HTTP/2). Si pasa, mira la línea
+`eco de protocolo` del informe: **un `tls=TLSv1.3` en un iOS 9 es imposible**
+(llegó a iOS en la 12.2). Si aparece, hay **un parche de TLS instalado en el
+dispositivo** poniéndose en medio: le da TLS moderno al sistema, pero no
+implementa ALPN —y sin ALPN no hay HTTP/2—. El caso medido fue el paquete
+**`tlsfix`** de Cydia (junto con `safarifix`); desinstalarlo y reiniciar devuelve
+el TLS 1.2 + HTTP/2 del sistema y la búsqueda funciona. La app no necesita ese
+parche: la API y los CDNs de vídeo cumplen ATS de sobra.
+
+Para verlo desde fuera hay un espía de saludos TLS que escucha en un puerto y
+cuenta lo que ofrece el cliente (`ALPN`, versiones, grupos, cifrados):
+
+```powershell
+python tools\espiar_clienthello.py --puerto 8443
+# y en el dispositivo: https://<ip-del-PC>:8443/   (el aviso de certificado no
+# importa: lo que interesa —el saludo— llega antes que el certificado)
+```
+
 ### Tema y color
 
 **Ajustes → Fondo** y **Ajustes → Color de botones.** Hay **dos fondos**
@@ -541,6 +566,7 @@ En el dispositivo, pon en Ajustes la IP **de tu PC en la red local**
 └── tools/
     ├── generar_recursos.py           Genera iconos y arranques (PNG a mano)
     ├── generar_certificados.py       Genera el perfil .mobileconfig
+    ├── espiar_clienthello.py         Espía de saludos TLS (qué ALPN ofrece el aparato)
     ├── servidor_instalador.py        Sirve la página y recoge el informe pegado
     └── verificar_ipa.py              Comprueba arquitectura y versión del .ipa
 ```
