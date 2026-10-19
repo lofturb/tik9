@@ -120,6 +120,9 @@ jobs:
         working-directory: ${{ env.APP_DIR }}
         run: |
           set -euo pipefail
+          # dpkg-deb no acepta un guion de mantenimiento que no sea ejecutable,
+          # y en Windows el bit de ejecucion no viaja en el fichero.
+          chmod 755 layout/DEBIAN/postinst
           make package FINALPACKAGE=1 PACKAGE_FORMAT=deb
           mkdir -p /tmp/deb
           cp packages/*.deb /tmp/deb/
