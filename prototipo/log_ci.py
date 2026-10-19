@@ -56,11 +56,14 @@ def main():
     todo = "--todo" in argumentos
     buscar = None
     paso = None
+    guardar = None
     for i, a in enumerate(argumentos):
         if a == "--buscar" and i + 1 < len(argumentos):
             buscar = argumentos[i + 1]
         elif a == "--paso" and i + 1 < len(argumentos):
             paso = argumentos[i + 1].lower()
+        elif a == "--guardar" and i + 1 < len(argumentos):
+            guardar = argumentos[i + 1]
 
     ejecucion = E.ultima()[0]
     print("ejecucion %s  %s  %s" % (ejecucion["id"], ejecucion["head_sha"][:7],
@@ -76,6 +79,11 @@ def main():
         lineas = [limpiar(l) for l in
                   registro("https://api.github.com/repos/%s/actions/jobs/%s/logs"
                            % (E.REPO, trabajo["id"])).splitlines()]
+
+        if guardar:
+            with open(guardar, "w", encoding="utf-8") as f:
+                f.write("\n".join(lineas))
+            print("registro guardado en %s (%d lineas)" % (guardar, len(lineas)))
 
         # Trozo del paso pedido: desde su "Run" hasta el siguiente grupo.
         if paso:

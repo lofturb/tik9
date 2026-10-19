@@ -32,6 +32,13 @@ CLANG="$THEOS/toolchain/linux/iphone/bin/clang"
 CLANGXX="$THEOS/toolchain/linux/iphone/bin/clang++"
 ARQUITECTURA="${ARQUITECTURA:-armv7}"
 MINIMO="${MINIMO:-9.0}"
+# BoringSSL cambia deprisa.  Esta fecha es el ultimo dia del que se coge el
+# codigo, y esta elegida a proposito: a partir del 2025-10-15 bssl::Span pasa a
+# tener tamano fijo en el tipo y el compilador del toolchain (LLVM 11) no lo
+# digiere.  Antes de esa fecha esta todo lo que hace falta: GREASE, extensiones
+# permutadas, TLS 1.3 y las curvas de Chrome.
+BORINGSSL_FECHA="${BORINGSSL_FECHA:-2025-09-01}"
+BORINGSSL_DESDE="${BORINGSSL_DESDE:-2025-05-01}"
 
 OBJETIVO="-target $ARQUITECTURA-apple-ios$MINIMO -isysroot $SDK -miphoneos-version-min=$MINIMO -Wno-error"
 TRABAJO="$(pwd)/.tunel"
@@ -67,10 +74,28 @@ fi
 if [ ! -f "$DESTINO/lib/libssl.a" ]; then
     echo "=== BoringSSL ==="
     if [ ! -d "$TRABAJO/boringssl/.git" ]; then
-        git clone --depth 1 https://boringssl.googlesource.com/boringssl \
-            "$TRABAJO/boringssl"
+        # Se trae solo la historia desde mayo, que es de donde sale el commit
+        # elegido: menos descarga y sigue permitiendo clavar la fecha.
+        git clone --shallow-since="$BORINGSSL_DESDE" --single-branch \
+            https://boringssl.googlesource.com/boringssl "$TRABAJO/boringssl"
     fi
-    echo "commit de BoringSSL: $(git -C "$TRABAJO/boringssl" rev-parse --short HEAD)"
+    COMITE="$(git -C "$TRABAJO/boringssl" log --before="$BORINGSSL_FECHA" -1 --format=%H)"
+    if [ -z "$COMITE" ]; then
+        echo "No hay commits de BoringSSL anteriores a $BORINGSSL_FECHA"
+        exit 1
+    fi
+    git -C "$TRABAJO/boringssl" checkout -q "$COMITE"
+    echo "BoringSSL: $COMITE  ($(git -C "$TRABAJO/boringssl" log -1 --format=%ad --date=short))"
+
+    # Que lo que usa el tunel exista en ese commit: si no, mejor saberlo aqui
+    # que en un error de compilacion a mitad.
+    for SIMBOLO in SSL_CTX_set_grease_enabled SSL_CTX_set_permute_extensions \
+                   SSL_CTX_set_strict_cipher_list SSL_set1_host; do
+        if ! grep -q "$SIMBOLO" "$TRABAJO/boringssl/include/openssl/ssl.h"; then
+            echo "A BoringSSL le falta $SIMBOLO en ese commit"
+            exit 1
+        fi
+    done
 
     rm -rf "$TRABAJO/boringssl/build"
     cmake -S "$TRABAJO/boringssl" -B "$TRABAJO/boringssl/build" \
@@ -87,7 +112,7 @@ if [ ! -f "$DESTINO/lib/libssl.a" ]; then
         -DCMAKE_CXX_FLAGS="$OBJETIVO" \
         -DCMAKE_BUILD_TYPE=Release \
         -DOPENSSL_NO_ASM=1 \
-        -DOPENSSL_NO_TESTS=1 \
+        -DBUILD_TESTING=OFF \
         -DBUILD_SHARED_LIBS=0 \
         -DCMAKE_POSITION_INDEPENDENT_CODE=0
     cmake --build "$TRABAJO/boringssl/build" --target ssl crypto -j "$(nproc)"

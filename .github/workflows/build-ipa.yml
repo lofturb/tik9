@@ -1,4 +1,4 @@
-name: Construir IPA (iOS 9.3.5 / armv7)
+﻿name: Construir IPA (iOS 9.3.5 / armv7)
 
 # Se ejecuta al pulsar "Run workflow" o al subir cambios.
 on:
@@ -129,7 +129,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: deps
-          key: tunel-${{ runner.os }}-armv7-ios9-v1
+          key: tunel-${{ runner.os }}-armv7-ios9-v2
 
       - name: Compilar BoringSSL y nghttp2 para armv7/iOS 9
         if: steps.cache-tunel.outputs.cache-hit != 'true'
@@ -230,7 +230,7 @@ jobs:
           # version, como se instala y los avisos legales. --latest deja este
           # Release como el mas visible de la pagina.
           gh release create "$ETIQUETA" ${APP_DIR}/packages/*.ipa ${APP_DIR}/packages/*.deb \
-            --title "Tik9 para iOS 9.3.5 (32 bits) — $ETIQUETA" \
+            --title "Tik9 para iOS 9.3.5 (32 bits) â€” $ETIQUETA" \
             --notes-file .github/notas-release.md \
             --latest \
             || echo "No se pudo crear el Release (el IPA sigue en Artefactos)"

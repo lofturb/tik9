@@ -246,16 +246,15 @@ static SSL_CTX *tt_contexto(int verificar) {
     SSL_CTX_set_min_proto_version(ctx, TLS1_2_VERSION);
     SSL_CTX_set_max_proto_version(ctx, TLS1_3_VERSION);
 
-    /* Lista de cifrados de Chrome (TLS 1.2) y sus suites de TLS 1.3. */
+    /* Lista de cifrados de Chrome (TLS 1.2).  Las suites de TLS 1.3 no se
+       tocan: el orden de fabrica de BoringSSL es el de Chrome
+       (AES128-GCM, AES256-GCM, ChaCha20). */
     SSL_CTX_set_strict_cipher_list(ctx,
         "ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:"
         "ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:"
         "ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305:"
         "ECDHE-RSA-AES128-SHA:ECDHE-RSA-AES256-SHA:"
         "AES128-GCM-SHA256:AES256-GCM-SHA384:AES128-SHA:AES256-SHA");
-    SSL_CTX_set_ciphersuites(ctx,
-        "TLS_AES_128_GCM_SHA256:TLS_AES_256_GCM_SHA384:"
-        "TLS_CHACHA20_POLY1305_SHA256");
 
     /* Curvas de Chrome. */
     SSL_CTX_set1_groups_list(ctx, "X25519:P-256:P-384");
@@ -406,14 +405,17 @@ static int tt_pedir_con(SSL *tls, const char *host, const char *ruta,
         struct timeval espera;
         espera.tv_sec = 2;
         espera.tv_usec = 0;
-        int listo = select(SSL_get_fd(tls) + 1, &lectura, NULL, NULL, &espera);
-        if (listo < 0) {
-            if (errno == EINTR) continue;
-            snprintf(error, tam, "fallo esperando datos (%s)", strerror(errno));
-            salida = -1;
-            break;
+        // Si ya hay datos descifrados esperando, no se espera al socket.
+        if (SSL_pending(tls) <= 0) {
+            int listo = select(SSL_get_fd(tls) + 1, &lectura, NULL, NULL, &espera);
+            if (listo < 0) {
+                if (errno == EINTR) continue;
+                snprintf(error, tam, "fallo esperando datos (%s)", strerror(errno));
+                salida = -1;
+                break;
+            }
+            if (listo == 0) continue;
         }
-        if (listo == 0) continue;
 
         int n = SSL_read(tls, buzon, sizeof buzon);
         if (n > 0) {
