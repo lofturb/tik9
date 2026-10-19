@@ -460,6 +460,95 @@ nuevos.
 
 ---
 
+## 4 septies. **La búsqueda sigue vetada con h2: la barrera mira la huella de la conexión** (medido el 2026-10-19)
+
+Con `tlsfix` desinstalado el iPad ya negocia **h2 + TLS 1.2** (confirmado en el
+eco de protocolo del propio aparato), y la búsqueda **seguía vacía**. El informe
+de la batería de la versión 1.1.0 (seis variantes, con reintento y pausa cada
+una) lo deja medido:
+
+| Variante en el iPad | Resultado |
+|---|---|
+| A · la de la app, tal cual | 3 intentos: `200`, 0 B, `orcas=1` |
+| B · sin `Referer` ni `Origin` | 2 intentos: `200`, 0 B, `orcas=1` |
+| C · User-Agent de Safari | 2 intentos: `200`, 0 B, `orcas=1` |
+| D · UA de Safari y declarándose iPad | 2 intentos: `200`, 0 B, `orcas=1` |
+| E · ruta vieja `/api/search/item/full/` | 2 intentos: `200`, 0 B, `orcas=1` |
+| F · `/api/search/user/full/` | 2 intentos: `200`, 0 B, sin datos |
+| feed (testigo) | `200`, 126 106 B, **6 vídeos** |
+
+Y en el mismo informe: cadena de certificados auténtica, **sin proxy**, `ttwid` y
+`msToken` del tamaño que toca. O sea: **no queda nada de la petición que
+cambiar** —ni UA, ni cabeceras, ni parámetros, ni ruta, ni reintentos— y el
+aparato habla h2. La misma dirección, firmada igual, pasa desde un cliente de
+pila moderna con la misma IP pública.
+
+Conclusión: `tt_orcas_res: 1` no es "esta petición no me gusta", es **"esta
+conexión no la tengo por buena"**. Akamai (la barrera que pone TikTok delante de
+la API) clasifica por **huella TLS + HTTP/2**, y la de iOS 9 (2015) no está en su
+lista de clientes conocidos. Además la barrera es **por ruta**: medido desde el
+PC, `/api/challenge/detail` responde sin `orcas` y `/api/challenge/item_list` no;
+las páginas `/search` y `/tag` traen 386 KB de HTML pero **sin los vídeos dentro**
+(los carga el JavaScript desde la API vetada), así que por HTML no hay puerta.
+
+**El arreglo, sin relay:** que la app hable con TikTok con una pila propia, con
+las piezas de un navegador de verdad. Eso es el **túnel** (`app/TTTunel.c`):
+
+* **BoringSSL**, la biblioteca TLS de Chrome, con su lista de cifrados, sus
+  curvas, GREASE y las extensiones permutadas: el saludo TLS de un Chrome real.
+  Con OpenSSL pelado no entra (es lo que les pasa a los proyectos que no
+  "impersonan" un navegador).
+* **nghttp2**, para armar HTTP/2 con los ajustes de Chrome (tabla de cabeceras de
+  64 kB, ventana inicial de 6 MB, ventana de conexión de 15,7 MB) en vez de con
+  los de Apple.
+* Solo se usa para las rutas vetadas. El feed, el detalle y las páginas siguen
+  por `NSURLSession`, que funciona y trae caché, ATS y certificados del sistema.
+
+Las dos bibliotecas se compilan para armv7/iOS 9 en la construcción
+(`tools/compilar_tunel.sh`, con caché) y se enlazan dentro de la app: no hay
+nada fuera del aparato ni ningún proceso aparte. La versión 1.2.0 estrena el
+caso **G** de la batería, que pide la búsqueda por el túnel y dice en el informe
+si entra.
+
+---
+
+## 4 octies. **Compilar una biblioteca de 2025 contra un sistema de 2015** (lo que costó)
+
+El túnel funciona (la app compila, enlaza y se empaqueta), pero meter BoringSSL
+(agosto de 2025) y nghttp2 en armv7/iOS 9 costó siete vueltas de construcción.
+Queda anotado, porque cada tropiezo es una cosa que **no** hay que volver a
+descubrir:
+
+1. **El compilador no prueba nada.** El SDK de armv7/iOS 9 no puede ejecutar sus
+   propias pruebas de CMake; se le dice que no las haga
+   (`CMAKE_C_COMPILER_WORKS`, `CMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY`) y se
+   usan `llvm-ar`/`llvm-ranlib`.
+2. **La fecha de BoringSSL importa.** El `bssl::Span` de tamaño fijo llegó en
+   octubre de 2025 y el LLVM 11 de este toolchain no lo compila: se fija un
+   commit **anterior a septiembre de 2025**, que ya tiene GREASE, extensiones
+   permutadas y TLS 1.3.
+3. **`std::optional::value()` está marcado «solo desde iOS 11»** en el libc++
+   de Apple. Esa marca dice contra qué sistema se puede enlazar, no qué código se
+   puede escribir: se compila con `_LIBCPP_DISABLE_AVAILABILITY` y, para no
+   generar llamadas a piezas que iOS 9 no trae, sin excepciones, sin liberación
+   con tamaño y sin reserva alineada.
+4. **`__throw_bad_optional_access` no existe en el libc++ de iOS 9** (llegó con
+   la marca anterior). Se pone el nuestro en `app/TTTunelCompat.cc`: en ese
+   camino de BoringSSL no se entra nunca, y es un seguro que aborta si algún día
+   se llamara.
+5. **Las tablas de C++ viven en `libc++abi`**, y el `libc++.tbd` que trae este
+   SDK no las reexporta (el de Apple de verdad sí). Se pide `-lc++abi` a mano.
+6. **`SecTrustCopyAnchorCertificates` no existe en iOS.** Lo dice su propia
+   cabecera: «certificate data for system-trusted roots is currently unavailable
+   on that platform». O sea que a BoringSSL **no se le pueden dar las raíces del
+   aparato**: el saludo TLS se termina sin comprobar y después el sistema valida
+   la cadena con `SecTrustEvaluate` (ver `tt_verificar_certificado`).
+7. **Un fichero con marca de orden de bytes (BOM) tumba el paquete.** `app/control`
+   empezaba por BOM y el generador del `.deb` no veía `Package:` en la primera
+   línea; el flujo ahora lo detecta y lo dice.
+
+---
+
 ## 5. Estado de la decisión
 
 * **Navegar (feed, miniaturas, ficha de vídeo en el feed):** resuelto y
@@ -471,11 +560,12 @@ nuevos.
 * **Relay:** **opcional**, solo como plan B (certificado del CDN no confiado en
   iOS 9, o red que corta la conexión). No firma nada: la app le pasa la
   dirección ya firmada.
-* **Buscar:** resuelto en Python y en la app, con un matiz importante: la ruta
-  exige **HTTP/2**, la cookie `ttwid` (identidad anónima, de una página pública)
-  y un `msToken` válido. La app consigue las tres sola, pero iOS 9 no le daba
-  HTTP/2 con el `Info.plist` que tenía; ahora se exige ATS en `www.tiktok.com`
-  para que lo negocie. Ver **4 quinquies** y **4 sexies**.
+* **Buscar:** la petición está resuelta (firma, parámetros, `ttwid`, `msToken`,
+  reintento con el token que TikTok regala), pero **la barrera de TikTok decide
+  por la huella de la conexión** y rechaza la de iOS 9 en las rutas de búsqueda
+  (ver **4 septies**). El arreglo es el **túnel**: BoringSSL + nghttp2 dentro de
+  la app, con el saludo TLS y los ajustes de HTTP/2 de un Chrome. Sin relay ni
+  nada fuera del aparato.
 * **Comentarios y perfiles:** pendientes. Se sabe que la API móvil exige
   `X-Argus`/`X-Ladon` (ver 2.5); no se han vuelto a medir sobre HTTP/2. Los
   comentarios se quedan fuera por ahora; el botón lo explica.

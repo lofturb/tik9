@@ -119,22 +119,26 @@ siguiente. Eso era lo que se notaba a tirones. Ahora:
 ### La lupa, arriba a la derecha
 
 Como en la app oficial, el feed lleva una **lupa** en la esquina superior derecha, y
-**busca de verdad en todo TikTok**. Costó tres intentos dar con el motivo
-(`HALLAZGOS.md`, 4 quinquies y 4 sexies): la firma ya era correcta, las cookies no
-bastaban y, además, iOS **no estaba negociando HTTP/2** con el permiso de red que
-traía el `Info.plist`. Lo que la ruta exige es
+**busca de verdad en todo TikTok**. La petición está resuelta (firma, parámetros,
+`ttwid`, `msToken` y reintento con el token que TikTok regala), pero TikTok tiene
+la ruta de búsqueda detrás de una barrera que **decide por la conexión**, no por lo
+que se pide: la huella TLS + HTTP/2 de iOS 9 (2015) no la tiene por buena y
+contesta `200` con el cuerpo vacío y `tt_orcas_res: 1`. Está medido variante por
+variante en `HALLAZGOS.md` (4 septies): User-Agent, cabeceras, parámetros, rutas y
+reintentos ya están todos descartados, y el feed —que no está vetado— funciona en
+el mismo aparato y con la misma firma.
 
-1. **HTTP/2**. La ruta responde vacío (`200` + 0 B + `tt_orcas_res: 1`) por
-   HTTP/1.1 aunque la firma y el token sean buenos; el feed, en cambio, va igual
-   por h1 y por h2 — por eso el fallo era invisible. `NSURLSession` negocia
-   HTTP/2 solo **cuando la conexión está sujeta a ATS**, así que la app ahora
-   exige ATS en `www.tiktok.com` (y mantiene el permiso global para el relay por
-   HTTP plano y los CDNs),
-2. la cookie **`ttwid`**, que es la identidad **anónima** — se consigue cargando una
-   página pública, **sin cuenta**, y la app lo hace una vez al abrir la lupa, y
-3. un **`msToken` válido** dentro de la firma — y no hay que fabricarlo: TikTok lo
-   **regala** en la cabecera `x-ms-token` de una respuesta rechazada, así que la app
-   pregunta, lo aprende y repite la búsqueda.
+El arreglo es el **túnel** (`app/TTTunel.c`): la app habla con TikTok con una pila
+propia, con las piezas de un navegador de verdad.
+
+* **BoringSSL**, la biblioteca TLS de Chrome: su lista de cifrados, sus curvas,
+  GREASE y las extensiones permutadas.
+* **nghttp2**, con los ajustes de HTTP/2 de Chrome (tabla de cabeceras de 64 kB,
+  ventana inicial de 6 MB).
+
+Las dos se compilan para armv7/iOS 9 dentro de la construcción (con caché) y se
+enlazan en la app: **sin relay ni nada fuera del aparato**. Solo se usan para las
+rutas vetadas; el feed, el detalle y las páginas siguen por `NSURLSession`.
 
 La pantalla, entonces, muestra:
 
@@ -156,8 +160,9 @@ La pantalla, entonces, muestra:
 TikTok **cierra la puerta a los clientes que no son la aplicación oficial**. No
 es cosa de Tik9: es cómo están montados sus servicios hoy.
 
-* **Buscar** sí funciona (ver *La lupa*). Lo que sigue cerrado son las rutas de
-  **sugerencias** de la web (`{"status_code":0,"status_msg":"url doesn't match"}`).
+* **Buscar** es lo que se está abriendo con el túnel (ver *La lupa*). Lo que sigue
+  cerrado son las rutas de **sugerencias** de la web
+  (`{"status_code":0,"status_msg":"url doesn't match"}`).
 * **Comentarios** no se sirven. El botón existe para no dejar un hueco raro, pero
   al tocarlo lo explica sin rodeos en lugar de fingir.
 * **Perfiles** tampoco se sirven. No hay pantalla de perfil.
