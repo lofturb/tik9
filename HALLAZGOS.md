@@ -443,6 +443,12 @@ Arreglo: **desinstalar `tlsfix`** (y `safarifix` si va con él) y reiniciar. Sin
 necesita. La app no pierde nada: los CDNs de vídeo y la API cumplen ATS de sobra
 (medido arriba), así que no necesita el parche.
 
+**Confirmado el mismo día:** tras desinstalar `tlsfix` y reiniciar, la traza de
+Cloudflare abierta en el Safari del iPad pasa de
+`http=http/1.1 tls=TLSv1.3` a **`http=http/2 tls=TLSv1.2`** — es decir, el
+dispositivo negocia HTTP/2 con su propia pila en cuanto el parche deja de
+ponerse en medio.
+
 **Plan B si aun así no hubiera h2.** Dos salidas sin depender de CFNetwork: pedir
 la búsqueda desde un `WKWebView` (WebKit trae su propia pila), o el **relay** (que
 sí hace h2 desde Python y devuelve el resultado al teléfono por HTTP/1.1). Ojo:
