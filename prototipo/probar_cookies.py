@@ -1,84 +1,98 @@
 # -*- coding: utf-8 -*-
 """
-Intenta obtener cookies reales (ttwid, msToken) por HTTP puro, que es lo que
-le falta a la URL del CDN.  Prueba varias puertas y muestra los Set-Cookie.
+probar_cookies.py -- mide si a la busqueda le falta alguna cookie.
+
+La identidad anonima de TikTok no es solo `ttwid`: /foryou tambien deja
+`tt_chain_token` (el testigo de la cadena anti-bot) y `tt_csrf_token`.  El feed
+pasa sin nada de eso, pero la busqueda puede exigirlo.  Aqui se pide la misma
+busqueda (mismos parametros y misma firma) cambiando solo el juego de cookies.
+
+Uso:  python prototipo/probar_cookies.py [palabra]
 """
 
-import http.cookiejar
 import json
 import os
 import sys
-import urllib.request
-import urllib.error
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from probar import params_item_detalle  # noqa: E402
-from xgnarly import XGnarly  # noqa: E402
+AQUI = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, AQUI)
 
-UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-      "(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36")
+import xgnarly as X  # noqa: E402
+from confianza_app import UA_APP, pares_app  # noqa: E402
+from probar_busqueda_navegador import URL_BASE  # noqa: E402
 
-NAV = {
-    "User-Agent": UA,
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-    "Accept-Language": "en-US,en;q=0.9",
-    "sec-ch-ua": '"Chromium";v="122", "Not(A:Brand";v="24", "Google Chrome";v="122"',
-    "sec-ch-ua-mobile": "?0",
-    "sec-ch-ua-platform": '"Windows"',
-    "sec-fetch-dest": "document",
-    "sec-fetch-mode": "navigate",
-    "sec-fetch-site": "none",
-    "sec-fetch-user": "?1",
-    "upgrade-insecure-requests": "1",
-}
+from curl_cffi import requests as cf  # noqa: E402
+from curl_cffi.const import CurlHttpVersion  # noqa: E402
 
 
 def main():
-    jar = http.cookiejar.CookieJar()
-    opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(jar))
+    palabra = sys.argv[1] if len(sys.argv) > 1 else "auron"
 
-    def get(url, h, metodo="GET", datos=None):
-        req = urllib.request.Request(url, headers=h, method=metodo, data=datos)
+    sesion = cf.Session(http_version=CurlHttpVersion.V2_0)
+    sesion.headers.update({"User-Agent": UA_APP})
+    sesion.get("https://www.tiktok.com/foryou", timeout=40)
+    galletas = dict(sesion.cookies)
+    ms = galletas.get("msToken", "")
+    print("cookies del PC y su tamano:")
+    for nombre in sorted(galletas):
+        print("   %-16s %3d car." % (nombre, len(galletas[nombre])))
+    print("   (la app dice: cookie 174 car. y msToken 120 car.)\n")
+
+    pares = [(k, v) for k, v in pares_app(palabra)]
+    consulta, _ = X.XGnarly(UA_APP).sign(pares, ms_token=ms)
+
+    def peticion(etiqueta, cookies):
+        cabeceras = {
+            "User-Agent": UA_APP,
+            "Accept": "application/json, text/plain, */*",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Referer": "https://www.tiktok.com/",
+            "Origin": "https://www.tiktok.com",
+        }
+        if cookies:
+            cabeceras["Cookie"] = "; ".join("%s=%s" % (k, v) for k, v in cookies)
+        r = sesion.get(URL_BASE + "?" + consulta, headers=cabeceras, timeout=40)
+        datos, estado = -1, "?"
         try:
-            with opener.open(req, timeout=40) as r:
-                return r.status, r.read(200000), r.headers.get_all("Set-Cookie") or []
-        except urllib.error.HTTPError as e:
-            return e.code, e.read(500), e.headers.get_all("Set-Cookie") or []
-        except Exception as e:  # noqa: BLE001
-            return None, ("EXC %r" % (e,)).encode(), []
+            j = json.loads(r.content.decode("utf-8", "replace"))
+            datos, estado = len(j.get("data") or []), j.get("status_code")
+        except Exception:  # noqa: BLE001
+            pass
+        print("  %-38s HTTP %s %8d B  orcas=%-5s status=%s data=%s  (cookie %d car.)" % (
+            etiqueta, r.status_code, len(r.content),
+            r.headers.get("tt_orcas_res") or "-", estado, datos,
+            len(cabeceras.get("Cookie", ""))))
 
-    puertas = [
-        ("home", "https://www.tiktok.com/"),
-        ("explore", "https://www.tiktok.com/explore"),
-        ("ttwid register", "https://ttwid.bytedance.com/ttwid/union/register/"),
-        ("mssdk config", "https://mssdk.bytedance.com/web/login/setting/v1?aid=1988"),
-    ]
-    for nombre, url in puertas:
-        est, cuerpo, sc = get(url, NAV)
-        print("[%s] estado=%s bytes=%d" % (nombre, est, len(cuerpo)))
-        for c in sc:
-            print("    Set-Cookie:", c[:140])
-        print("    cookies jar ahora:", [(c.name, len(c.value), c.domain) for c in jar])
-        print()
+    ordenadas = sorted(galletas.items())
+    peticion("todas las cookies", ordenadas)
+    peticion("solo ttwid", [("ttwid", galletas.get("ttwid", ""))])
+    peticion("solo ttwid + msToken",
+             [("ttwid", galletas.get("ttwid", "")), ("msToken", ms)])
+    peticion("todas menos tt_chain_token",
+             [c for c in ordenadas if c[0] != "tt_chain_token"])
+    peticion("sin ninguna cookie", [])
 
-    ms = next((c.value for c in jar if c.name == "msToken"), "")
-    print("msToken obtenido: %d caracteres" % len(ms))
-    if ms:
-        firmado, _ = XGnarly(UA).sign(params_item_detalle("7106594312292453675"), ms_token=ms)
-        est, cuerpo, _ = get("https://www.tiktok.com/api/item/detail/?" + firmado,
-                             dict(NAV, Accept="application/json, text/plain, */*",
-                                  **{"Referer": "https://www.tiktok.com/"}))
-        print("item/detail con msToken real: estado=%s bytes=%d" % (est, len(cuerpo)))
+    # Y el msToken de la firma: con uno vacio o inventado, ¿que contesta?
+    print()
+    for etiqueta, token in [("firma con el msToken bueno", ms),
+                            ("firma con msToken vacio", ""),
+                            ("firma con msToken inventado", "a" * len(ms))]:
+        consulta2, _ = X.XGnarly(UA_APP).sign(pares, ms_token=token)
+        r = sesion.get(URL_BASE + "?" + consulta2,
+                       headers={"User-Agent": UA_APP,
+                                "Accept": "application/json, text/plain, */*",
+                                "Referer": "https://www.tiktok.com/",
+                                "Cookie": "; ".join("%s=%s" % (k, v) for k, v in ordenadas)},
+                       timeout=40)
+        datos, estado = -1, "?"
         try:
-            v = json.loads(cuerpo)["itemInfo"]["itemStruct"]["video"]
-            u = v.get("playAddr")
-            print("playAddr host:", u.split("/")[2] if u else None)
-            cab = dict(NAV, Range="bytes=0-262143", **{"Referer": "https://www.tiktok.com/"})
-            est2, datos, _ = get(u, cab)
-            print("CDN con cookies reales: estado=%s bytes=%d avc1=%s" % (
-                est2, len(datos), b"avc1" in datos))
-        except Exception as e:  # noqa: BLE001
-            print("  sin itemStruct:", e, cuerpo[:200])
+            j = json.loads(r.content.decode("utf-8", "replace"))
+            datos, estado = len(j.get("data") or []), j.get("status_code")
+        except Exception:  # noqa: BLE001
+            pass
+        print("  %-38s HTTP %s %8d B  orcas=%-5s status=%s data=%s" % (
+            etiqueta, r.status_code, len(r.content),
+            r.headers.get("tt_orcas_res") or "-", estado, datos))
 
 
 if __name__ == "__main__":

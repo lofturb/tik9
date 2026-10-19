@@ -5,6 +5,8 @@
 #import "TTResolvedor.h"
 #import <Security/Security.h>
 #import <CFNetwork/CFNetwork.h>
+#import <UIKit/UIKit.h>
+#import <sys/sysctl.h>
 #import <stdlib.h>
 
 NSString * const TTErrorDominio = @"Tik9";
@@ -33,10 +35,26 @@ static NSError *TTError(TTCodigoError codigo, NSString *texto) {
 // fichero.
 @interface TTCliente ()
 - (NSString *)firmarPares:(NSArray *)pares;
+- (NSString *)firmarPares:(NSArray *)pares conUA:(NSString *)ua;
 - (NSString *)cabecera:(NSString *)nombre de:(NSHTTPURLResponse *)respuesta;
 - (NSString *)msTokenDeRespuesta:(NSHTTPURLResponse *)respuesta;
 - (NSInteger)estadoDeBusqueda:(NSDictionary *)json;
 - (NSArray *)paresDeBusqueda:(NSString *)palabra;
+- (NSArray *)paresDeBusqueda:(NSString *)palabra conBase:(NSArray *)base;
+- (NSArray *)paresBaseDeIPad;
+- (NSString *)uaDeSafariDelAparato;
+- (void)bateriaDeBusqueda:(NSString *)palabra
+                   lineas:(NSMutableArray *)lineas
+               completado:(void (^)(void))completado;
+- (void)casoDeBateria:(NSArray *)casos
+                indice:(NSInteger)indice
+                lineas:(NSMutableArray *)lineas
+            completado:(void (^)(void))completado;
+- (void)intentoDeCaso:(NSDictionary *)caso
+              intento:(NSInteger)intento
+                pasos:(NSMutableArray *)pasos
+               lineas:(NSMutableArray *)lineas
+           completado:(void (^)(void))completado;
 - (NSArray *)videosDeRespuestaDeBusqueda:(NSDictionary *)json;
 - (void)pedirRuta:(NSString *)ruta
             pares:(NSArray *)pares
@@ -47,6 +65,12 @@ static NSError *TTError(TTCodigoError codigo, NSString *texto) {
                             NSError *error))completado;
 - (void)pedirRutaCrudo:(NSString *)ruta
                  pares:(NSArray *)pares
+            completado:(void (^)(NSData *datos, NSHTTPURLResponse *respuesta,
+                                 NSError *error))completado;
+- (void)pedirRutaCrudo:(NSString *)ruta
+                 pares:(NSArray *)pares
+                    ua:(NSString *)ua
+                omitir:(NSArray *)omitir
             completado:(void (^)(NSData *datos, NSHTTPURLResponse *respuesta,
                                  NSError *error))completado;
 - (void)buscarPalabra:(NSString *)palabra
@@ -112,8 +136,14 @@ static NSError *TTError(TTCodigoError codigo, NSString *texto) {
 // Los objetos NSString se retienen durante la llamada: UTF8String solo es
 // valido mientras viven.
 - (NSString *)firmarPares:(NSArray *)pares {
+    return [self firmarPares:pares conUA:[[TTSesion compartida] userAgent]];
+}
+
+// La firma cubre el User-Agent, asi que cuando se prueba con otro UA (el de
+// Safari, sin ir mas lejos) hay que firmar con ese mismo.
+- (NSString *)firmarPares:(NSArray *)pares conUA:(NSString *)ua {
     TTSesion *ses = [TTSesion compartida];
-    NSString *ua = [ses userAgent];
+    if (ua.length == 0) ua = [ses userAgent];
     NSString *ms = [ses msToken];
 
     int n = (int)pares.count;
@@ -159,8 +189,21 @@ static NSError *TTError(TTCodigoError codigo, NSString *texto) {
                  pares:(NSArray *)pares
             completado:(void (^)(NSData *datos, NSHTTPURLResponse *respuesta,
                                  NSError *error))completado {
+    [self pedirRutaCrudo:ruta pares:pares ua:nil omitir:nil completado:completado];
+}
 
-    NSString *firmado = [self firmarPares:pares];
+// Igual, pero eligiendo con que User-Agent se firma y que cabeceras se dejan
+// fuera.  Lo usa la bateria del diagnostico para probar variantes sin tocar la
+// busqueda de verdad.
+- (void)pedirRutaCrudo:(NSString *)ruta
+                 pares:(NSArray *)pares
+                    ua:(NSString *)ua
+                omitir:(NSArray *)omitir
+            completado:(void (^)(NSData *datos, NSHTTPURLResponse *respuesta,
+                                 NSError *error))completado {
+
+    NSString *uaUsado = ua.length ? ua : [[TTSesion compartida] userAgent];
+    NSString *firmado = [self firmarPares:pares conUA:uaUsado];
     if (firmado.length == 0) {
         completado(nil, nil, TTError(TTErrorFirma, @"No se pudo firmar la peticion"));
         return;
@@ -176,7 +219,10 @@ static NSError *TTError(TTCodigoError codigo, NSString *texto) {
     NSMutableURLRequest *peticion = [NSMutableURLRequest requestWithURL:url];
     peticion.HTTPMethod = @"GET";
     peticion.timeoutInterval = 25.0;
-    NSDictionary *cabeceras = [[TTSesion compartida] cabecerasBase];
+    NSMutableDictionary *cabeceras = [NSMutableDictionary dictionaryWithDictionary:
+                                      [[TTSesion compartida] cabecerasBase]];
+    cabeceras[@"User-Agent"] = uaUsado;
+    for (NSString *clave in omitir) [cabeceras removeObjectForKey:clave];
     for (NSString *clave in cabeceras) {
         [peticion setValue:cabeceras[clave] forHTTPHeaderField:clave];
     }
@@ -307,24 +353,38 @@ static NSError *TTError(TTCodigoError codigo, NSString *texto) {
     [self pedirRuta:@"/api/search/general/full/" pares:[self paresDeBusqueda:palabra]
        conRespuesta:^(NSDictionary *json, NSHTTPURLResponse *respuesta, NSError *error) {
 
-        // 1) Sin msToken (o con uno caducado) TikTok contesta 200 vacio y regala
-        //    uno nuevo en x-ms-token.  Se guarda y se repite la busqueda una vez.
+        // 1) TikTok ha mirado la peticion y no la ha dado por buena: contesta 200
+        //    con el cuerpo vacio y la cabecera tt_orcas_res: 1 (o un status 2483).
+        //    En la misma respuesta regala un msToken nuevo, que se guarda.
+        //
+        //    Medido desde el PC: la PRIMERA peticion de una identidad recien
+        //    estrenada vuelve vacia y la siguiente, identica, ya trae resultados;
+        //    pero solo si se deja pasar un momento.  Reintentar pegado no sirve,
+        //    asi que se repite hasta tres veces con una pausa de por medio.
         NSString *nuevoMs = [self msTokenDeRespuesta:respuesta];
-        if (intento == 0 && nuevoMs.length &&
-            (error || [self estadoDeBusqueda:json] == 2483)) {
-            [[TTSesion compartida] guardarMsTokenAprendido:nuevoMs];
-            [self buscarPalabra:palabra intento:1 completado:completado];
-            return;
-        }
+        NSString *orcas = [self cabecera:@"tt_orcas_res" de:respuesta];
+        NSInteger estadoAhora = [self estadoDeBusqueda:json];
+        BOOL vacia = (error && [error.domain isEqualToString:TTErrorDominio] &&
+                      error.code == TTErrorVacio);
+        BOOL rechazada = (orcas.length > 0) || vacia || (estadoAhora == 2483);
 
-        // 2) 2483 sin msToken nuevo: falta la identidad anonima.  Se olvida y se
-        //    vuelve a pedir una vez.
-        if (intento == 0 && [self estadoDeBusqueda:json] == 2483) {
-            [[TTSesion compartida] olvidarIdentidad];
-            [[TTSesion compartida] prepararIdentidad:^(BOOL lograda) {
-                (void)lograda;
-                [self buscarPalabra:palabra intento:1 completado:completado];
-            }];
+        if (intento < 3 && rechazada) {
+            if (nuevoMs.length) [[TTSesion compartida] guardarMsTokenAprendido:nuevoMs];
+            // Un 2483 sin msToken nuevo significa que falta la identidad anonima:
+            // se olvida la vieja y se pide otra antes de reintentar.
+            BOOL sinIdentidad = (estadoAhora == 2483 && nuevoMs.length == 0);
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.2 * NSEC_PER_SEC)),
+                           dispatch_get_main_queue(), ^{
+                if (sinIdentidad) {
+                    [[TTSesion compartida] olvidarIdentidad];
+                    [[TTSesion compartida] prepararIdentidad:^(BOOL lograda) {
+                        (void)lograda;
+                        [self buscarPalabra:palabra intento:intento + 1 completado:completado];
+                    }];
+                } else {
+                    [self buscarPalabra:palabra intento:intento + 1 completado:completado];
+                }
+            });
             return;
         }
 
@@ -354,7 +414,11 @@ static NSError *TTError(TTCodigoError codigo, NSString *texto) {
 
 // Parametros de la busqueda: los de siempre mas lo que la ruta espera.
 - (NSArray *)paresDeBusqueda:(NSString *)palabra {
-    NSMutableArray *pares = [NSMutableArray arrayWithArray:[[TTSesion compartida] paresBase]];
+    return [self paresDeBusqueda:palabra conBase:[[TTSesion compartida] paresBase]];
+}
+
+- (NSArray *)paresDeBusqueda:(NSString *)palabra conBase:(NSArray *)base {
+    NSMutableArray *pares = [NSMutableArray arrayWithArray:base];
     [pares addObject:@[ @"count", @"12" ]];
     [pares addObject:@[ @"offset", @"0" ]];
     [pares addObject:@[ @"is_filter_search", @"0" ]];
@@ -362,6 +426,161 @@ static NSError *TTError(TTCodigoError codigo, NSString *texto) {
     [pares addObject:@[ @"search_source", @"normal_search" ]];
     [pares addObject:@[ @"keyword", palabra ]];
     return pares;
+}
+
+// La misma base, pero declarando un iPad.  Si el rechazo viniera de que la app
+// dice ser un PC con Windows y se conecta con la pila de un iPad viejo, esta es
+// la variante que lo arreglaria.
+- (NSArray *)paresBaseDeIPad {
+    NSMutableArray *pares = [NSMutableArray array];
+    for (NSArray *par in [[TTSesion compartida] paresBase]) {
+        NSString *clave = par.count > 1 ? par[0] : @"";
+        NSString *valor = par.count > 1 ? par[1] : @"";
+        if ([clave isEqualToString:@"browser_platform"]) valor = @"iPad";
+        else if ([clave isEqualToString:@"device_platform"]) valor = @"web_mobile";
+        else if ([clave isEqualToString:@"os"]) valor = @"ios";
+        [pares addObject:@[ clave, valor ]];
+    }
+    return pares;
+}
+
+// El User-Agent que manda Safari en este aparato, armado como lo arma el
+// sistema.  La firma cubre el UA tal cual, asi que tiene que ser el mismo que
+// se manda en la cabecera.
+- (NSString *)uaDeSafariDelAparato {
+    char modelo[64] = {0};
+    size_t tam = sizeof modelo;
+    if (sysctlbyname("hw.machine", modelo, &tam, NULL, 0) != 0) modelo[0] = '\0';
+    char compilacion[64] = {0};
+    tam = sizeof compilacion;
+    if (sysctlbyname("kern.osversion", compilacion, &tam, NULL, 0) != 0) compilacion[0] = '\0';
+
+    NSString *maquina = modelo[0] ? [NSString stringWithUTF8String:modelo]
+                                  : @"iPad2,5";
+    NSSet *minis = [NSSet setWithObjects:@"iPad2,5", @"iPad2,6", @"iPad2,7",
+                    @"iPad4,4", @"iPad4,5", @"iPad4,6", @"iPad5,1", @"iPad5,2", nil];
+    NSString *aparato;
+    if ([minis containsObject:maquina])            aparato = @"iPad mini";
+    else if ([maquina hasPrefix:@"iPad"])          aparato = @"iPad";
+    else if ([maquina hasPrefix:@"iPhone"])        aparato = @"iPhone";
+    else if ([maquina hasPrefix:@"iPod"])          aparato = @"iPod touch";
+    else                                           aparato = @"iPad";
+
+    NSString *version = [[[UIDevice currentDevice] systemVersion]
+                         stringByReplacingOccurrencesOfString:@"." withString:@"_"];
+    NSString *build = compilacion[0] ? [NSString stringWithUTF8String:compilacion] : @"13G37";
+    return [NSString stringWithFormat:
+        @"Mozilla/5.0 (%@; CPU OS %@ like Mac OS X) AppleWebKit/601.1.46 "
+        @"(KHTML, like Gecko) Version/9.0 Mobile/%@ Safari/601.1",
+        aparato, version, build];
+}
+
+#pragma mark - Bateria del diagnostico
+
+// Prueba de una pasada todas las variantes que quedan.  Misma palabra, misma
+// ruta, mismo aparato: solo cambia el User-Agent, las cabeceras, los parametros
+// o la ruta.  Cada variante se reintenta con una pausa, porque en el PC esta
+// medido que la primera peticion de una identidad recien estrenada vuelve vacia
+// y la siguiente ya no.
+- (void)bateriaDeBusqueda:(NSString *)palabra
+                   lineas:(NSMutableArray *)lineas
+               completado:(void (^)(void))completado {
+
+    NSString *uaSafari = [self uaDeSafariDelAparato];
+    [lineas addObject:[NSString stringWithFormat:@"UA de Safari del aparato: %@", uaSafari]];
+
+    NSArray *casos = @[
+        @{ @"etq": @"A tal cual (como la app)", @"intentos": @3,
+           @"ruta": @"/api/search/general/full/",
+           @"pares": [self paresDeBusqueda:palabra] },
+        @{ @"etq": @"B sin Referer ni Origin", @"intentos": @2,
+           @"ruta": @"/api/search/general/full/",
+           @"pares": [self paresDeBusqueda:palabra],
+           @"omitir": @[ @"Referer", @"Origin" ] },
+        @{ @"etq": @"C con el UA de Safari", @"intentos": @2,
+           @"ruta": @"/api/search/general/full/",
+           @"pares": [self paresDeBusqueda:palabra],
+           @"ua": uaSafari },
+        @{ @"etq": @"D UA Safari y declarandose iPad", @"intentos": @2,
+           @"ruta": @"/api/search/general/full/",
+           @"pares": [self paresDeBusqueda:palabra conBase:[self paresBaseDeIPad]],
+           @"ua": uaSafari },
+        @{ @"etq": @"E ruta vieja search/item", @"intentos": @2,
+           @"ruta": @"/api/search/item/full/",
+           @"pares": [self paresDeBusqueda:palabra] },
+        @{ @"etq": @"F ruta search/user", @"intentos": @2,
+           @"ruta": @"/api/search/user/full/",
+           @"pares": [self paresDeBusqueda:palabra] },
+    ];
+    [self casoDeBateria:casos indice:0 lineas:lineas completado:completado];
+}
+
+- (void)casoDeBateria:(NSArray *)casos
+                indice:(NSInteger)indice
+                lineas:(NSMutableArray *)lineas
+            completado:(void (^)(void))completado {
+    if (indice >= (NSInteger)casos.count) { completado(); return; }
+    NSDictionary *caso = casos[(NSUInteger)indice];
+    [self intentoDeCaso:caso intento:1 pasos:[NSMutableArray array] lineas:lineas
+             completado:^{
+        [self casoDeBateria:casos indice:indice + 1 lineas:lineas completado:completado];
+    }];
+}
+
+- (void)intentoDeCaso:(NSDictionary *)caso
+              intento:(NSInteger)intento
+                pasos:(NSMutableArray *)pasos
+               lineas:(NSMutableArray *)lineas
+           completado:(void (^)(void))completado {
+
+    NSInteger maximo = [caso[@"intentos"] integerValue];
+    [self pedirRutaCrudo:caso[@"ruta"] pares:caso[@"pares"] ua:caso[@"ua"]
+                  omitir:caso[@"omitir"]
+              completado:^(NSData *datos, NSHTTPURLResponse *respuesta, NSError *error) {
+
+        NSInteger estado = 0;
+        NSDictionary *json = nil;
+        if (datos.length) {
+            id j = [NSJSONSerialization JSONObjectWithData:datos options:0 error:NULL];
+            if ([j isKindOfClass:[NSDictionary class]]) {
+                json = j;
+                estado = [self estadoDeBusqueda:json];
+            }
+        }
+        NSUInteger videos = 0;
+        if (json[@"data"] || json[@"itemList"]) {
+            videos = [self videosDeRespuestaDeBusqueda:json].count;
+            id lista = json[@"itemList"];
+            if (!videos && [lista isKindOfClass:[NSArray class]]) {
+                videos = [(NSArray *)lista count];
+            }
+        }
+        NSString *orcas = [self cabecera:@"tt_orcas_res" de:respuesta];
+        NSString *nuevo = [self msTokenDeRespuesta:respuesta];
+        NSMutableString *paso = [NSMutableString stringWithFormat:
+            @"%ld) HTTP %ld, %lu B", (long)intento,
+            (long)(respuesta ? respuesta.statusCode : 0), (unsigned long)datos.length];
+        if (orcas.length) [paso appendFormat:@" orcas=%@", orcas];
+        if (estado != 0) [paso appendFormat:@" status=%ld", (long)estado];
+        if (nuevo.length) [paso appendFormat:@" regala=%lu", (unsigned long)nuevo.length];
+        if (json) [paso appendFormat:@" videos=%lu", (unsigned long)videos];
+        if (error) [paso appendFormat:@" error=%@", error.localizedDescription];
+        [pasos addObject:paso];
+
+        BOOL salioBien = (videos > 0);
+        if (!salioBien && intento < maximo && (error || datos.length == 0 || estado == 2483)) {
+            if (nuevo.length) [[TTSesion compartida] guardarMsTokenAprendido:nuevo];
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.2 * NSEC_PER_SEC)),
+                           dispatch_get_main_queue(), ^{
+                [self intentoDeCaso:caso intento:intento + 1 pasos:pasos lineas:lineas
+                         completado:completado];
+            });
+            return;
+        }
+        [lineas addObject:[NSString stringWithFormat:@"bateria %@: %@",
+                           caso[@"etq"], [pasos componentsJoinedByString:@"   "]]];
+        dispatch_async(dispatch_get_main_queue(), ^{ completado(); });
+    }];
 }
 
 // Saca los videos de la respuesta.  Mezcla tipos: interesa data[i].item, que es
@@ -648,6 +867,11 @@ static NSError *TTError(TTCodigoError codigo, NSString *texto) {
     TTSesion *ses = [TTSesion compartida];
     NSMutableArray *lineas = [NSMutableArray array];
     NSString *msAntes = [ses msToken];
+    // La version va la primera: los informes se pegan en el ordenador y hay que
+    // poder saber de que compilacion salieron.
+    [lineas addObject:[NSString stringWithFormat:@"app: Tik9 %@ (compilacion %@)",
+                       [[NSBundle mainBundle] objectForInfoDictionaryKey:@"CFBundleShortVersionString"] ?: @"?",
+                       [[NSBundle mainBundle] objectForInfoDictionaryKey:@"CFBundleVersion"] ?: @"?"]];
     [lineas addObject:[NSString stringWithFormat:@"palabra: %@", limpia]];
     [lineas addObject:[NSString stringWithFormat:
         @"ttwid antes: %@   cookie antes: %lu car.   msToken antes: %lu car.%@",
@@ -679,9 +903,10 @@ static NSError *TTError(TTCodigoError codigo, NSString *texto) {
                pares:[self paresDeFeedConCursor:@"0" conLosDeBusqueda:YES]
               lineas:lineas completado:^{
         [self sondaDeRelay:lineas completado:^{
+        [self bateriaDeBusqueda:limpia lineas:lineas completado:^{
             [self rematarInforme:lineas];
             completado([lineas componentsJoinedByString:@"\n"]);
-        }]; }]; }]; }]; }]; }]; }]; }];
+        }]; }]; }]; }]; }]; }]; }]; }]; }];
     }];
 }
 
@@ -690,23 +915,33 @@ static NSError *TTError(TTCodigoError codigo, NSString *texto) {
 - (void)rematarInforme:(NSMutableArray *)lineas {
     NSString *todo = [lineas componentsJoinedByString:@"\n"];
 
-    // Si la busqueda trajo videos, no hay nada que diagnosticar.
+    // Si alguna prueba trajo videos, no hay nada que diagnosticar.  Se mira
+    // tambien la bateria, que prueba variantes: si una funciona, esa es la que
+    // hay que usar en la busqueda de verdad (y el informe dice cual).
     BOOL salieron = NO;
-    NSRange donde = [todo rangeOfString:@"busqueda(20):"];
-    if (donde.location != NSNotFound) {
-        NSString *resto = [todo substringFromIndex:donde.location];
-        NSRange salto = [resto rangeOfString:@"\n"];
-        NSString *linea = (salto.location == NSNotFound) ? resto
-                                                         : [resto substringToIndex:salto.location];
+    NSString *variante = nil;
+    for (NSString *linea in lineas) {
         NSRange videos = [linea rangeOfString:@"videos="];
-        if (videos.location != NSNotFound) {
-            salieron = ([linea substringFromIndex:videos.location + 7].integerValue > 0);
+        if (videos.location == NSNotFound) continue;
+        if ([linea substringFromIndex:videos.location + 7].integerValue <= 0) continue;
+        salieron = YES;
+        if ([linea hasPrefix:@"bateria "]) {
+            NSRange dosPuntos = [linea rangeOfString:@":"];
+            if (dosPuntos.location != NSNotFound && dosPuntos.location > 8) {
+                variante = [[linea substringWithRange:NSMakeRange(8, dosPuntos.location - 8)]
+                            stringByTrimmingCharactersInSet:
+                            [NSCharacterSet whitespaceCharacterSet]];
+            }
         }
+        break;
     }
 
     NSString *veredicto;
     if (salieron) {
-        veredicto = @"La busqueda devuelve videos: funciona.";
+        veredicto = variante.length
+            ? [NSString stringWithFormat:@"La busqueda si funciona, con la variante "
+               @"«%@»: esa es la que hay que usar.", variante]
+            : @"La busqueda devuelve videos: funciona.";
     } else if ([todo rangeOfString:@"certificado falso: HTTP"].location != NSNotFound) {
         veredicto = @"Hay un intermediario (proxy, VPN o bloqueador) firmando los "
                     @"certificados; la busqueda no puede funcionar hasta quitarlo.";
@@ -715,6 +950,11 @@ static NSError *TTError(TTCodigoError codigo, NSString *texto) {
                     @"Compara el eco de protocolo con la misma direccion en Safari del "
                     @"telefono: si alli sale http/2 y aqui http/1.1, el problema esta en "
                     @"la app; si sale http/1.1 en los dos, esta en el sistema.";
+    } else if ([todo rangeOfString:@"orcas=1"].location != NSNotFound) {
+        veredicto = @"TikTok rechaza TODAS las variantes en este aparato (orcas=1): da "
+                    @"por sospechosa la huella de su conexion (el TLS y el HTTP/2 de "
+                    @"iOS 9). La misma direccion, con la misma firma, funciona desde un "
+                    @"ordenador moderno.";
     } else {
         veredicto = @"No se pudo medir el protocolo de las peticiones.";
     }

@@ -31,7 +31,28 @@ import sys
 
 RAIZ = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 INFORMES = os.path.join(RAIZ, "entrega", "informes.txt")
+AGENTES = os.path.join(RAIZ, "entrega", "agentes.txt")
 TOPE_BYTES = 200 * 1024
+
+
+def apuntar_agente(cabeza, origen):
+    """Guarda quien ha pedido la pagina y con que cabeceras de navegador.
+
+    Sirve para saber el User-Agent EXACTO del aparato: la firma de TikTok cubre
+    el UA, asi que una prueba en Safari solo vale si la URL se firma con el UA
+    que Safari manda de verdad.
+    """
+    try:
+        os.makedirs(os.path.dirname(AGENTES), exist_ok=True)
+        cuando = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        with open(AGENTES, "a", encoding="utf-8") as f:
+            f.write("-" * 60 + "\n%s  (%s)\n" % (cuando, origen))
+            for nombre in ("User-Agent", "Accept", "Accept-Language",
+                           "Accept-Encoding", "Connection"):
+                if nombre in cabeza:
+                    f.write("%s: %s\n" % (nombre, cabeza[nombre]))
+    except OSError:
+        pass
 
 
 def guardar_informe(texto, origen):
@@ -79,6 +100,13 @@ class Manejador(http.server.SimpleHTTPRequestHandler):
         self.responder_texto("Guardado en el ordenador (%d caracteres).\n" % cuantos)
 
     def do_GET(self):  # noqa: N802
+        if self._ruta() == "/ua":
+            # Devuelve el UA tal cual para poder copiarlo si hace falta, y lo
+            # deja apuntado en entrega/agentes.txt.
+            apuntar_agente(self.headers, self.client_address[0])
+            agente = self.headers.get("User-Agent") or "(sin User-Agent)"
+            self.responder_texto("User-Agent de este aparato:\n\n%s\n" % agente)
+            return
         if self._ruta() == "/informes":
             try:
                 with open(INFORMES, encoding="utf-8") as f:
