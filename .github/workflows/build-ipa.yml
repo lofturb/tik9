@@ -135,7 +135,13 @@ jobs:
         if: steps.cache-tunel.outputs.cache-hit != 'true'
         run: |
           set -euo pipefail
-          bash tools/compilar_tunel.sh deps
+          # Si falla, se ensena el registro de CMake, que es donde esta el
+          # motivo de verdad (el mensaje de arriba solo dice "compilador roto").
+          if ! bash tools/compilar_tunel.sh deps; then
+            echo "--- registros de CMake ---"
+            find .tunel -name 'CMakeError.log' -print -exec cat {} \; || true
+            exit 1
+          fi
 
       - name: Comprobar que el tunel esta listo
         run: |

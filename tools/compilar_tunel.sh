@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env bash
+#!/usr/bin/env bash
 # ---------------------------------------------------------------------------
 #  compilar_tunel.sh -- compila las dos bibliotecas del "tunel".
 #
@@ -36,6 +36,14 @@ MINIMO="${MINIMO:-9.0}"
 OBJETIVO="-target $ARQUITECTURA-apple-ios$MINIMO -isysroot $SDK -miphoneos-version-min=$MINIMO -Wno-error"
 TRABAJO="$(pwd)/.tunel"
 
+# Empacadores del propio toolchain (los de Linux tambien valen, pero estos son
+# los que entienden los objetos de Apple sin sorpresas).
+AR="$(dirname "$CLANG")/llvm-ar"
+RANLIB="$(dirname "$CLANG")/llvm-ranlib"
+EMPACADORES=()
+[ -x "$AR" ] && EMPACADORES+=("-DCMAKE_AR=$AR")
+[ -x "$RANLIB" ] && EMPACADORES+=("-DCMAKE_RANLIB=$RANLIB")
+
 if [ ! -x "$CLANG" ]; then
     echo "No encuentro el compilador de Theos en $CLANG"
     echo "THEOS=$THEOS"
@@ -69,6 +77,9 @@ if [ ! -f "$DESTINO/lib/libssl.a" ]; then
         -DCMAKE_SYSTEM_NAME=Darwin \
         -DCMAKE_SYSTEM_PROCESSOR=arm \
         -DCMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY \
+        -DCMAKE_C_COMPILER_WORKS=1 \
+        -DCMAKE_CXX_COMPILER_WORKS=1 \
+        "${EMPACADORES[@]}" \
         -DCMAKE_C_COMPILER="$CLANG" \
         -DCMAKE_CXX_COMPILER="$CLANGXX" \
         -DCMAKE_ASM_COMPILER="$CLANG" \
@@ -105,6 +116,9 @@ if [ ! -f "$DESTINO/lib/libnghttp2.a" ]; then
         -DCMAKE_SYSTEM_NAME=Darwin \
         -DCMAKE_SYSTEM_PROCESSOR=arm \
         -DCMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY \
+        -DCMAKE_C_COMPILER_WORKS=1 \
+        -DCMAKE_CXX_COMPILER_WORKS=1 \
+        "${EMPACADORES[@]}" \
         -DCMAKE_C_COMPILER="$CLANG" \
         -DCMAKE_CXX_COMPILER="$CLANGXX" \
         -DCMAKE_C_FLAGS="$OBJETIVO" \
