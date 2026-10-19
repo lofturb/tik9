@@ -87,6 +87,11 @@ if [ ! -f "$DESTINO/lib/libssl.a" ]; then
     git -C "$TRABAJO/boringssl" checkout -q "$COMITE"
     echo "BoringSSL: $COMITE  ($(git -C "$TRABAJO/boringssl" log -1 --format=%ad --date=short))"
 
+    # El SDK 9.3 trae CommonRandom.h sin la cabecera de la que toma sus tipos
+    # (CCCryptorStatus vive en CommonCryptor.h); se incluye antes a la fuerza.
+    # En los SDK nuevos CommonRandom.h ya la trae y esto no estorba.
+    INCLUIR_COMUN="-include CommonCrypto/CommonCryptor.h"
+
     # Que lo que usa el tunel exista en ese commit: si no, mejor saberlo aqui
     # que en un error de compilacion a mitad.
     for SIMBOLO in SSL_CTX_set_grease_enabled SSL_CTX_set_permute_extensions \
@@ -108,8 +113,8 @@ if [ ! -f "$DESTINO/lib/libssl.a" ]; then
         -DCMAKE_C_COMPILER="$CLANG" \
         -DCMAKE_CXX_COMPILER="$CLANGXX" \
         -DCMAKE_ASM_COMPILER="$CLANG" \
-        -DCMAKE_C_FLAGS="$OBJETIVO" \
-        -DCMAKE_CXX_FLAGS="$OBJETIVO" \
+        -DCMAKE_C_FLAGS="$OBJETIVO $INCLUIR_COMUN" \
+        -DCMAKE_CXX_FLAGS="$OBJETIVO $INCLUIR_COMUN" \
         -DCMAKE_BUILD_TYPE=Release \
         -DOPENSSL_NO_ASM=1 \
         -DBUILD_TESTING=OFF \
