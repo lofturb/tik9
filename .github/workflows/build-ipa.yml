@@ -112,12 +112,32 @@ jobs:
           python3 tools/generar_recursos.py
           ls -la "$APP_DIR/Resources/" | head -n 25
 
+      # El .deb es el camino de instalacion mas firme en un aparato con
+      # jailbreak: dpkg copia la app a /Applications y el postinst refresca
+      # LaunchServices.  Se compila ANTES que el .ipa porque "make clean" (que
+      # va en el paso siguiente) vacia packages/.
+      - name: Compilar tambien el paquete .deb
+        working-directory: ${{ env.APP_DIR }}
+        run: |
+          set -euo pipefail
+          make package FINALPACKAGE=1 PACKAGE_FORMAT=deb
+          mkdir -p /tmp/deb
+          cp packages/*.deb /tmp/deb/
+          ls -la /tmp/deb
+
       - name: Compilar la app y empaquetar el .ipa
         working-directory: ${{ env.APP_DIR }}
         run: |
           set -euo pipefail
           make clean || true
           make package FINALPACKAGE=1 PACKAGE_FORMAT=ipa
+
+      - name: Recuperar el .deb para publicarlo junto al .ipa
+        working-directory: ${{ env.APP_DIR }}
+        run: |
+          set -euo pipefail
+          cp /tmp/deb/*.deb packages/
+          ls -la packages/
 
       - name: Verificar que el binario es armv7 para iOS 9
         run: |
@@ -145,7 +165,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: Tik9-ipa-armv7
-          path: ${{ env.APP_DIR }}/packages/*.ipa
+          path: |
+            ${{ env.APP_DIR }}/packages/*.ipa
+            ${{ env.APP_DIR }}/packages/*.deb
           if-no-files-found: error
           retention-days: 90
 
@@ -163,7 +185,7 @@ jobs:
           # entienda sin abrir siquiera el README: que es, que trae esta
           # version, como se instala y los avisos legales. --latest deja este
           # Release como el mas visible de la pagina.
-          gh release create "$ETIQUETA" ${APP_DIR}/packages/*.ipa \
+          gh release create "$ETIQUETA" ${APP_DIR}/packages/*.ipa ${APP_DIR}/packages/*.deb \
             --title "Tik9 para iOS 9.3.5 (32 bits) — $ETIQUETA" \
             --notes-file .github/notas-release.md \
             --latest \

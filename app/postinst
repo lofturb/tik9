@@ -1,0 +1,21 @@
+#!/bin/sh
+# Tik9 -- se ejecuta al terminar de instalar el paquete (.deb).
+#
+# Al instalar un .ipa con Filza hay aparatos en los que el registro de
+# aplicaciones de iOS (LaunchServices) se atasca y suelta "error de
+# LaunchServices: 0".  El .deb no pasa por ahi: dpkg copia la app a
+# /Applications y aqui solo hay que pedirle a iOS que vuelva a leer esa
+# carpeta, para que el icono aparezca sin reiniciar.
+#
+# Todo va protegido con "if" y termina siempre en 0: si uicache no existe o
+# no le gusta la orden, la instalacion NO debe darse por fallida.
+
+if [ -x /usr/bin/uicache ]; then
+    /usr/bin/uicache -p /Applications/Tik9.app >/dev/null 2>&1 || true
+fi
+
+if [ -x /usr/bin/uicache ]; then
+    /usr/bin/uicache >/dev/null 2>&1 || true
+fi
+
+exit 0
