@@ -3,11 +3,13 @@
 #import "TTSesion.h"
 #import "TTSignaCore.h"
 #import "TTResolvedor.h"
+#import "TTTunel.h"
 #import <Security/Security.h>
 #import <CFNetwork/CFNetwork.h>
 #import <UIKit/UIKit.h>
 #import <sys/sysctl.h>
 #import <stdlib.h>
+#import <string.h>
 
 NSString * const TTErrorDominio = @"Tik9";
 
@@ -34,6 +36,9 @@ static NSError *TTError(TTCodigoError codigo, NSString *texto) {
 // Metodos internos, declarados antes de usarlos para no depender del orden del
 // fichero.
 @interface TTCliente ()
+// Se pone a SI en cuanto una prueba de la bateria trae videos: entonces ya no
+// hace falta seguir probando variantes (y el diagnostico dura mucho menos).
+@property (nonatomic) BOOL bateriaLograda;
 - (NSString *)firmarPares:(NSArray *)pares;
 - (NSString *)firmarPares:(NSArray *)pares conUA:(NSString *)ua;
 - (NSString *)cabecera:(NSString *)nombre de:(NSHTTPURLResponse *)respuesta;
@@ -55,6 +60,11 @@ static NSError *TTError(TTCodigoError codigo, NSString *texto) {
                 pasos:(NSMutableArray *)pasos
                lineas:(NSMutableArray *)lineas
            completado:(void (^)(void))completado;
+- (void)intentoDeTunel:(NSDictionary *)caso
+               intento:(NSInteger)intento
+                 pasos:(NSMutableArray *)pasos
+                lineas:(NSMutableArray *)lineas
+            completado:(void (^)(void))completado;
 - (NSArray *)videosDeRespuestaDeBusqueda:(NSDictionary *)json;
 - (void)pedirRuta:(NSString *)ruta
             pares:(NSArray *)pares
@@ -487,9 +497,25 @@ static NSError *TTError(TTCodigoError codigo, NSString *texto) {
                completado:(void (^)(void))completado {
 
     NSString *uaSafari = [self uaDeSafariDelAparato];
+    self.bateriaLograda = NO;
     [lineas addObject:[NSString stringWithFormat:@"UA de Safari del aparato: %@", uaSafari]];
 
-    NSArray *casos = @[
+    char descripcion[128] = {0};
+    tt_tunel_descripcion(descripcion, sizeof descripcion);
+    [lineas addObject:[NSString stringWithFormat:@"tunel: %@ (%s)",
+                       tt_tunel_hay() ? @"disponible" : @"NO compilado", descripcion]];
+
+    // La bateria para en cuanto una variante trae videos.  La G va la primera
+    // porque es la que se esta probando: si el tunel entra, el diagnostico
+    // termina en un par de peticiones en vez de en una docena.
+    NSMutableArray *casos = [NSMutableArray array];
+    if (tt_tunel_hay()) {
+        [casos addObject:@{ @"etq": @"G por el tunel (BoringSSL + HTTP/2)", @"intentos": @2,
+                            @"ruta": @"/api/search/general/full/",
+                            @"pares": [self paresDeBusqueda:palabra],
+                            @"tunel": @YES }];
+    }
+    [casos addObjectsFromArray:@[
         @{ @"etq": @"A tal cual (como la app)", @"intentos": @3,
            @"ruta": @"/api/search/general/full/",
            @"pares": [self paresDeBusqueda:palabra] },
@@ -511,7 +537,7 @@ static NSError *TTError(TTCodigoError codigo, NSString *texto) {
         @{ @"etq": @"F ruta search/user", @"intentos": @2,
            @"ruta": @"/api/search/user/full/",
            @"pares": [self paresDeBusqueda:palabra] },
-    ];
+    ]];
     [self casoDeBateria:casos indice:0 lineas:lineas completado:completado];
 }
 
@@ -520,6 +546,7 @@ static NSError *TTError(TTCodigoError codigo, NSString *texto) {
                 lineas:(NSMutableArray *)lineas
             completado:(void (^)(void))completado {
     if (indice >= (NSInteger)casos.count) { completado(); return; }
+    if (self.bateriaLograda) { completado(); return; }
     NSDictionary *caso = casos[(NSUInteger)indice];
     [self intentoDeCaso:caso intento:1 pasos:[NSMutableArray array] lineas:lineas
              completado:^{
@@ -532,6 +559,14 @@ static NSError *TTError(TTCodigoError codigo, NSString *texto) {
                 pasos:(NSMutableArray *)pasos
                lineas:(NSMutableArray *)lineas
            completado:(void (^)(void))completado {
+
+    // Las variantes que van por el tunel (pila TLS + HTTP/2 propia) no usan
+    // NSURLSession, asi que tienen su propio camino.
+    if ([caso[@"tunel"] boolValue]) {
+        [self intentoDeTunel:caso intento:intento pasos:pasos lineas:lineas
+                  completado:completado];
+        return;
+    }
 
     NSInteger maximo = [caso[@"intentos"] integerValue];
     [self pedirRutaCrudo:caso[@"ruta"] pares:caso[@"pares"] ua:caso[@"ua"]
@@ -577,10 +612,110 @@ static NSError *TTError(TTCodigoError codigo, NSString *texto) {
             });
             return;
         }
+        if (salioBien) self.bateriaLograda = YES;
         [lineas addObject:[NSString stringWithFormat:@"bateria %@: %@",
                            caso[@"etq"], [pasos componentsJoinedByString:@"   "]]];
         dispatch_async(dispatch_get_main_queue(), ^{ completado(); });
     }];
+}
+
+// Una pasada por el tunel.  La firma se rehace en cada intento (con el msToken
+// que TikTok haya regalado en el anterior), igual que en la busqueda de verdad.
+- (void)intentoDeTunel:(NSDictionary *)caso
+               intento:(NSInteger)intento
+                 pasos:(NSMutableArray *)pasos
+                lineas:(NSMutableArray *)lineas
+            completado:(void (^)(void))completado {
+
+    NSInteger maximo = [caso[@"intentos"] integerValue];
+    NSString *ua = caso[@"ua"] ?: [[TTSesion compartida] userAgent];
+    NSString *firmado = [self firmarPares:caso[@"pares"] conUA:ua];
+    if (firmado.length == 0) {
+        [lineas addObject:[NSString stringWithFormat:@"bateria %@: no se pudo firmar",
+                           caso[@"etq"]]];
+        dispatch_async(dispatch_get_main_queue(), ^{ completado(); });
+        return;
+    }
+
+    NSString *ruta = [NSString stringWithFormat:@"%@?%@", caso[@"ruta"], firmado];
+    NSMutableDictionary *cabeceras = [NSMutableDictionary dictionaryWithDictionary:
+                                      [[TTSesion compartida] cabecerasBase]];
+    cabeceras[@"User-Agent"] = ua;
+    for (NSString *clave in caso[@"omitir"]) [cabeceras removeObjectForKey:clave];
+
+    // El tunel bloquea (hace su propia conexion y espera), asi que va fuera de
+    // la cola principal: si no, la app se quedaria congelada mientras prueba.
+    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+        tt_tunel_respuesta r;
+        memset(&r, 0, sizeof r);
+        int resultado = tt_tunel_pedir("www.tiktok.com",
+                                       ruta.UTF8String,
+                                       [cabeceras[@"User-Agent"] UTF8String],
+                                       [cabeceras[@"Accept"] UTF8String],
+                                       [cabeceras[@"Accept-Language"] UTF8String],
+                                       [cabeceras[@"Referer"] UTF8String],
+                                       [cabeceras[@"Origin"] UTF8String],
+                                       [cabeceras[@"Cookie"] UTF8String],
+                                       &r);
+        NSData *datos = (resultado == 0 && r.largo > 0 && r.cuerpo)
+                        ? [NSData dataWithBytes:r.cuerpo length:(NSUInteger)r.largo]
+                        : [NSData data];
+        NSInteger estadoHTTP = r.estado;
+        NSString *orcas = r.orcas[0] ? [NSString stringWithUTF8String:r.orcas] : @"";
+        NSString *nuevo = r.ms_token[0] ? [NSString stringWithUTF8String:r.ms_token] : @"";
+        NSString *tls = r.tls[0] ? [NSString stringWithUTF8String:r.tls] : @"";
+        NSString *fallo = r.error[0] ? [NSString stringWithUTF8String:r.error] : @"";
+        BOOL verificado = (r.verificado != 0);
+        tt_tunel_soltar(&r);
+
+        dispatch_async(dispatch_get_main_queue(), ^{
+            NSInteger estado = 0;
+            NSDictionary *json = nil;
+            if (datos.length) {
+                id j = [NSJSONSerialization JSONObjectWithData:datos options:0 error:NULL];
+                if ([j isKindOfClass:[NSDictionary class]]) {
+                    json = j;
+                    estado = [self estadoDeBusqueda:json];
+                }
+            }
+            NSUInteger videos = 0;
+            if (json) {
+                videos = [self videosDeRespuestaDeBusqueda:json].count;
+                id lista = json[@"itemList"];
+                if (!videos && [lista isKindOfClass:[NSArray class]]) {
+                    videos = [(NSArray *)lista count];
+                }
+            }
+
+            NSMutableString *paso = [NSMutableString stringWithFormat:
+                @"%ld) HTTP %ld, %lu B", (long)intento, (long)estadoHTTP,
+                (unsigned long)datos.length];
+            if (orcas.length) [paso appendFormat:@" orcas=%@", orcas];
+            if (estado != 0) [paso appendFormat:@" status=%ld", (long)estado];
+            if (nuevo.length) [paso appendFormat:@" regala=%lu", (unsigned long)nuevo.length];
+            if (json) [paso appendFormat:@" videos=%lu", (unsigned long)videos];
+            if (tls.length) [paso appendFormat:@"  [%@%@]", tls,
+                             verificado ? @"" : @", SIN VERIFICAR"];
+            if (fallo.length) [paso appendFormat:@" error=%@", fallo];
+            [pasos addObject:paso];
+
+            BOOL salioBien = (videos > 0);
+            if (salioBien) self.bateriaLograda = YES;
+            if (!salioBien && intento < maximo) {
+                if (nuevo.length) [[TTSesion compartida] guardarMsTokenAprendido:nuevo];
+                dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
+                                             (int64_t)(1.2 * NSEC_PER_SEC)),
+                               dispatch_get_main_queue(), ^{
+                    [self intentoDeTunel:caso intento:intento + 1 pasos:pasos
+                                  lineas:lineas completado:completado];
+                });
+                return;
+            }
+            [lineas addObject:[NSString stringWithFormat:@"bateria %@: %@",
+                               caso[@"etq"], [pasos componentsJoinedByString:@"   "]]];
+            completado();
+        });
+    });
 }
 
 // Saca los videos de la respuesta.  Mezcla tipos: interesa data[i].item, que es

@@ -38,7 +38,8 @@ Tik9_FILES = \
 	TTFeedViewController.m \
 	TTBusquedaViewController.m \
 	TTAjustesViewController.m \
-	TTSignaCore.c
+	TTSignaCore.c \
+	TTTunel.c
 
 # QuartzCore para las capas (esquinas redondeadas, sombreado del texto) y
 # AVFoundation para reproducir.  MediaPlayer solo para el mando del sistema
@@ -51,5 +52,23 @@ Tik9_RESOURCE_DIRS = Resources
 # Todo lo que hay en Resources/ (Info.plist, iconos, imagenes de arranque) se
 # copia a la raiz del .app.  Theos hace esto automaticamente.
 Tik9_LDFLAGS = -Wl,-dead_strip
+
+# ---------------------------------------------------------------------------
+#  El "tunel": BoringSSL + nghttp2
+#
+#  La busqueda de TikTok rechaza la pila de red de iOS 9 por la huella de la
+#  conexion (ver TTTunel.h y HALLAZGOS.md).  Para poder hablar con una pila
+#  moderna, la construccion compila antes BoringSSL y nghttp2 con
+#  tools/compilar_tunel.sh y las deja en TUNEL_DIR.
+#
+#  Si TUNEL_DIR viene vacio (compilacion sin preparar las bibliotecas), la app
+#  se compila igual: TTTunel.c trae un hueco que dice "no compilado" y todo lo
+#  demas funciona como antes.  Asi un fallo preparando las bibliotecas no deja
+#  el proyecto sin poder compilar.
+# ---------------------------------------------------------------------------
+ifneq ($(TUNEL_DIR),)
+Tik9_CFLAGS += -I$(TUNEL_DIR)/include -DTT_TUNEL=1
+Tik9_LDFLAGS += -L$(TUNEL_DIR)/lib -lssl -lcrypto -lnghttp2
+endif
 
 include $(THEOS_MAKE_PATH)/application.mk

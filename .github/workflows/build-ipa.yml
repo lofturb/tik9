@@ -9,6 +9,8 @@ on:
 env:
   THEOS: ${{ github.workspace }}/theos
   APP_DIR: app
+  # Donde tools/compilar_tunel.sh deja BoringSSL y nghttp2 para la app.
+  TUNEL_DIR: ${{ github.workspace }}/deps
   # Toolchain LLVM 11.1.0-L3 de L1ghtmann: el ultimo release estable y el
   # mas usado para compilar armv7 contra SDK 9.3. Es el que expone
   # linux/iphone/bin/clang dentro de $THEOS/toolchain.
@@ -33,7 +35,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y build-essential fakeroot rsync curl perl zip unzip git \
-            libxml2 xz-utils libz3-dev libtinfo6
+            libxml2 xz-utils libz3-dev libtinfo6 cmake golang-go
           sudo apt-get install -y libtinfo5 || echo "libtinfo5 no disponible (no es critico)"
           sudo update-alternatives --set fakeroot /usr/bin/fakeroot-sysv || true
 
@@ -111,6 +113,39 @@ jobs:
           set -euo pipefail
           python3 tools/generar_recursos.py
           ls -la "$APP_DIR/Resources/" | head -n 25
+
+      # ---------------------------------------------------------------------
+      #  El tunel: BoringSSL (TLS de Chrome) + nghttp2 (HTTP/2).
+      #
+      #  Se cachea porque compilar BoringSSL tarda un par de minutos y su
+      #  codigo no cambia entre versiones de la app.  Si la cache existe, este
+      #  paso no hace nada y la compilacion sigue igual de rapida.
+      #
+      #  Si la preparacion fallara, el script deja un aviso y la app se compila
+      #  sin tunel (el diagnostico lo dice): un problema aqui no tumba el build.
+      # ---------------------------------------------------------------------
+      - name: Cachear el tunel compilado
+        id: cache-tunel
+        uses: actions/cache@v4
+        with:
+          path: deps
+          key: tunel-${{ runner.os }}-armv7-ios9-v1
+
+      - name: Compilar BoringSSL y nghttp2 para armv7/iOS 9
+        if: steps.cache-tunel.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          bash tools/compilar_tunel.sh deps
+
+      - name: Comprobar que el tunel esta listo
+        run: |
+          set -euo pipefail
+          ls -la "$TUNEL_DIR/lib" || true
+          test -f "$TUNEL_DIR/lib/libssl.a"
+          test -f "$TUNEL_DIR/lib/libcrypto.a"
+          test -f "$TUNEL_DIR/lib/libnghttp2.a"
+          test -f "$TUNEL_DIR/include/openssl/ssl.h"
+          test -f "$TUNEL_DIR/include/nghttp2/nghttp2.h"
 
       # El .deb es el camino de instalacion mas firme en un aparato con
       # jailbreak: dpkg copia la app a /Applications y el postinst refresca
