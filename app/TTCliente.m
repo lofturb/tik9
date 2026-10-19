@@ -491,12 +491,24 @@ static NSError *TTError(TTCodigoError codigo, NSString *texto) {
 
 // Pregunta a un servicio de fuera por el protocolo y el TLS que ha negociado
 // esta app.  Desde dentro no hay forma de verlo, y es la diferencia que explica
-// que la busqueda falle: la ruta exige HTTP/2.
+// que la busqueda falle: la ruta exige HTTP/2.  Se pide sin cache y con un
+// numero al azar en la direccion, porque una copia guardada (en el telefono o en
+// un cache del camino) daria un resultado viejo y enganoso.  Ademas se apunta la
+// misma direccion para probarla en Safari: si en Safari sale http/2 y aqui
+// http/1.1, la diferencia esta en la app; si en los dos sale http/1.1, esta en el
+// sistema.
 - (void)ecoDeProtocolo:(NSMutableArray *)lineas completado:(void (^)(void))completado {
+    NSString *direccion = [NSString stringWithFormat:
+        @"https://www.cloudflare.com/cdn-cgi/trace?tik9=%u", arc4random()];
     NSMutableURLRequest *peticion = [NSMutableURLRequest requestWithURL:
-        [NSURL URLWithString:@"https://www.cloudflare.com/cdn-cgi/trace"]];
+        [NSURL URLWithString:direccion]];
     peticion.timeoutInterval = 15.0;
-    [[[NSURLSession sharedSession] dataTaskWithRequest:peticion
+    peticion.cachePolicy = NSURLRequestReloadIgnoringLocalAndRemoteCacheData;
+
+    NSURLSessionConfiguration *cfg = [NSURLSessionConfiguration ephemeralSessionConfiguration];
+    cfg.requestCachePolicy = NSURLRequestReloadIgnoringLocalAndRemoteCacheData;
+    [[[NSURLSession sessionWithConfiguration:cfg]
+        dataTaskWithRequest:peticion
         completionHandler:^(NSData *datos, NSURLResponse *respuesta, NSError *error) {
         (void)respuesta;
         if (error) {
@@ -508,13 +520,16 @@ static NSError *TTError(TTCodigoError codigo, NSString *texto) {
             NSMutableArray *trozos = [NSMutableArray array];
             for (NSString *linea in [texto componentsSeparatedByString:@"\n"]) {
                 if ([linea hasPrefix:@"http="] || [linea hasPrefix:@"tls="]
-                    || [linea hasPrefix:@"kex="]) {
+                    || [linea hasPrefix:@"kex="] || [linea hasPrefix:@"ts="]
+                    || [linea hasPrefix:@"ip="]) {
                     [trozos addObject:linea];
                 }
             }
             [lineas addObject:[NSString stringWithFormat:@"eco de protocolo: %@",
                                trozos.count ? [trozos componentsJoinedByString:@" "]
                                             : @"(sin datos)"]];
+            [lineas addObject:@"   (para comparar, abre lo mismo en Safari del "
+                             "telefono: https://www.cloudflare.com/cdn-cgi/trace?tik9=safari)"];
         }
         dispatch_async(dispatch_get_main_queue(), ^{ completado(); });
     }] resume];
@@ -674,17 +689,34 @@ static NSError *TTError(TTCodigoError codigo, NSString *texto) {
 // (y lo primero que se pega), asi que va en una linea y sin adornos.
 - (void)rematarInforme:(NSMutableArray *)lineas {
     NSString *todo = [lineas componentsJoinedByString:@"\n"];
+
+    // Si la busqueda trajo videos, no hay nada que diagnosticar.
+    BOOL salieron = NO;
+    NSRange donde = [todo rangeOfString:@"busqueda(20):"];
+    if (donde.location != NSNotFound) {
+        NSString *resto = [todo substringFromIndex:donde.location];
+        NSRange salto = [resto rangeOfString:@"\n"];
+        NSString *linea = (salto.location == NSNotFound) ? resto
+                                                         : [resto substringToIndex:salto.location];
+        NSRange videos = [linea rangeOfString:@"videos="];
+        if (videos.location != NSNotFound) {
+            salieron = ([linea substringFromIndex:videos.location + 7].integerValue > 0);
+        }
+    }
+
     NSString *veredicto;
-    if ([todo rangeOfString:@"certificado falso: HTTP"].location != NSNotFound) {
+    if (salieron) {
+        veredicto = @"La busqueda devuelve videos: funciona.";
+    } else if ([todo rangeOfString:@"certificado falso: HTTP"].location != NSNotFound) {
         veredicto = @"Hay un intermediario (proxy, VPN o bloqueador) firmando los "
-                    @"certificados: la busqueda no puede funcionar hasta quitarlo.";
-    } else if ([todo rangeOfString:@"eco de protocolo: http=http/1.1"].location != NSNotFound) {
-        veredicto = @"El telefono va por HTTP/1.1: la busqueda necesita HTTP/2, por "
-                    @"eso devuelve vacio (el feed funciona igual por las dos).";
-    } else if ([todo rangeOfString:@"eco de protocolo: http=http/2"].location != NSNotFound) {
-        veredicto = @"El telefono si habla HTTP/2; si la busqueda falla, es otra cosa.";
+                    @"certificados; la busqueda no puede funcionar hasta quitarlo.";
+    } else if ([todo rangeOfString:@"conn=keep-alive"].location != NSNotFound) {
+        veredicto = @"Las peticiones van por HTTP/1.1 y la busqueda necesita HTTP/2. "
+                    @"Compara el eco de protocolo con la misma direccion en Safari del "
+                    @"telefono: si alli sale http/2 y aqui http/1.1, el problema esta en "
+                    @"la app; si sale http/1.1 en los dos, esta en el sistema.";
     } else {
-        veredicto = @"No se pudo medir el protocolo.";
+        veredicto = @"No se pudo medir el protocolo de las peticiones.";
     }
     [lineas insertObject:[NSString stringWithFormat:@"VEREDICTO: %@", veredicto] atIndex:0];
 }

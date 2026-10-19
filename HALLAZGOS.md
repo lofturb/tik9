@@ -337,37 +337,73 @@ de TLS. Así que se pasó a **exigir ATS en `www.tiktok.com`** (TLS 1.2 + secret
 hacia adelante) dejando el permiso global para el resto. **No sirvió**: la
 búsqueda siguió saliendo con `connection: keep-alive` (o sea, HTTP/1.1).
 
-**Y entonces salió el dato que lo explica todo.** El diagnóstico nuevo pregunta a
-`https://www.cloudflare.com/cdn-cgi/trace` qué ve Cloudflare al otro lado, y en el
-teléfono contesta:
+**El informe del 18/10/2026 (build con sonda de certificados).** Ya no hay que
+adivinar: el teléfono contesta con estos hechos.
 
 ```
+sistema: Version 9.3.6 (Build 13G37)
+proxy del sistema: ninguno
 eco de protocolo: http=http/1.1 tls=TLSv1.3 kex=X25519
+certificado de www.tiktok.com:
+  3 certificados en la cadena
+    [0] *.www.tiktok.com
+    [1] RapidSSL TLS ECC CA G1
+    [2] DigiCert Global Root G3
+    huella de la hoja: 02662ed741155db2
+pagina con certificado falso: rechazado por certificado no confiable -- bien
+busqueda(20): 1) HTTP 200, 0 B orcas=1 conn=keep-alive regala=120 car.  -> ... 2) igual
+feed(16): 1) HTTP 200, 134215 B conn=keep-alive regala=120 car. videos=6
+feed+busqueda(20): 1) HTTP 200, 131300 B ... videos=6
 ```
 
-Cloudflare ve **TLS 1.3 con X25519**, y iOS 9 no sabe hacer ni lo uno ni lo otro
-(TLS 1.3 llegó a iOS con la 12.2). Es decir: **entre el teléfono y TikTok hay un
-intermediario** — un proxy, una VPN o un bloqueador — que corta el TLS, lo rehace
-por su cuenta (con su pila moderna) y **reorigina la conexión en HTTP/1.1**. Por
-eso todo el tráfico del teléfono es h1, incluso contra servidores que ofrecen h2,
-y por eso la búsqueda contesta vacío mientras el feed va perfecto.
+**Qué descarta (y por qué).**
 
-El diagnóstico ahora lo comprueba de tres maneras y lo dice en una línea:
+* **No hay intermediario en la conexión con TikTok.** La cadena de certificados
+  es la auténtica —la firma RapidSSL/DigiCert, y la huella de la hoja
+  `02662ed741155db2` es **idéntica** a la que se ve desde el PC—, no hay proxy
+  configurado y `self-signed.badssl.com` se **rechaza** como debe. Nadie está
+  cortando el TLS.
+* **Por lo tanto, el HTTP/1.1 lo elige el teléfono, no un tercero.** ALPN viaja
+  *dentro* del TLS: si la sesión con `www.tiktok.com` es de extremo a extremo y
+  auténtica (lo es), el h1/h2 lo pactan el teléfono y TikTok a solas; nadie en
+  medio puede cambiarlo. **El que no ofrece h2 es CFNetwork.**
+* **La firma queda descartada del todo**: el feed *con los 20 parámetros de la
+  búsqueda encima* trae 131 KB y 6 vídeos. Y el reintento de `msToken` se ve
+  funcionar en el informe (`1) ... regala 120 car. -> 2) igual`).
 
-* `eco de protocolo` (la traza de Cloudflare: `http=`, `tls=`, `kex=`),
-* **la cadena de certificados de `www.tiktok.com`** (cuántos trae, cómo se llama
-  cada uno y la huella del de la hoja): si no la firma una autoridad pública, ahí
-  está el intermediario,
-* una petición a `https://self-signed.badssl.com/`, cuyo certificado no firma
-  nadie: si **sale bien**, es que alguien lo está firmando por el camino,
-* `CFNetworkCopySystemProxySettings` (el proxy de Ajustes → Wi-Fi) y la versión
-  del sistema.
+**El dato raro, y por qué no cambia nada.** La traza de Cloudflare dice
+`tls=TLSv1.3 kex=X25519`, que es lo que negocia un cliente moderno… exactamente
+lo mismo que contesta a un cliente de Python **por defecto** (medido desde el PC:
+una pila con TLS 1.3 y sin ALPN `h2` produce `http=http/1.1 tls=TLSv1.3
+kex=X25519`). Es decir: la traza *retrata* al que no pide h2. Cómo llega ahí un
+iOS 9 (que no sabe TLS 1.3) queda abierto, y por eso el diagnóstico ahora pide la
+traza **sin caché y con un número al azar en la dirección** (una copia guardada
+en el teléfono o en un caché del camino daría un dato viejo): lo importante es
+que el `conn=keep-alive` de las respuestas de TikTok ya demuestra el h1, sin
+depender de esa traza.
 
-La salida, por tanto, no está en la app: hay que **quitar ese intermediario**
-(Ajustes → General → Perfil/Administración de dispositivos, Ajustes → VPN, o el
-tweake que sea). Sin él, el teléfono negociará h2 y la búsqueda funcionará como
-funciona en Python. Si no se puede quitar, queda el plan B sin intermediario:
-pedir la búsqueda desde un `WKWebView` (WebKit trae su propia pila de red).
+**La palanca siguiente.** Con los CDNs medidos y todos cumpliendo ATS de sobra
+(`v16m.tiktokcdn.com`, `v16-webapp.tiktok.com`, `sf16-ies-music-sg.tiktokcdn.com`:
+TLS 1.2 + ECDHE-ECDSA), ya no hay que elegir entre HTTPS y vídeo: el
+`Info.plist` pasa a **`NSAllowsArbitraryLoads = false`** (ATS de verdad en toda la
+app) dejando relajados solo los CDNs de TikTok. Es el cambio que queda por probar
+de verdad, porque la excepción por dominio **no** bastaba mientras el permiso
+global siguiera puesto.
+
+**Plan B si el sistema no negocia h2 ni así.** Dos salidas sin depender de
+CFNetwork: pedir la búsqueda desde un `WKWebView` (WebKit trae su propia pila), o
+el **relay** (que sí hace h2 desde Python y devuelve el resultado al teléfono por
+HTTP/1.1). Ojo: con ATS estricto el relay por **HTTP plano deja de valer en
+iOS 9** (`NSAllowsLocalNetworking` solo existe de iOS 10 en adelante), así que en
+ese camino el relay tendría que ir por HTTPS con un certificado de confianza —
+lo que ya monta `tools/generar_certificados.py` — o quedarse como está en
+dispositivos nuevos.
+
+El informe de la búsqueda deja además esta pista para comparar dentro del propio
+teléfono: la misma traza abierta **en Safari**
+(`https://www.cloudflare.com/cdn-cgi/trace?tik9=safari`). Si en Safari sale
+`http/2` y en la app `http/1.1`, la diferencia está en la app; si sale `http/1.1`
+en los dos, está en el sistema.
 
 ---
 

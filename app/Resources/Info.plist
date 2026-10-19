@@ -40,29 +40,32 @@
 	<key>UIViewControllerBasedStatusBarAppearance</key>
 	<false/>
 
-	<!-- iOS 9 no confia en los certificados modernos, y las miniaturas y el
-	     video viven en CDNs (tiktokcdn.com) con TLS moderno.  Si instalas las
-	     raices actualizadas en el dispositivo (ver README) el video directo
-	     puede funcionar; si no, se usa el modo relay por HTTP plano. -->
+	<!-- ATS.  iOS solo negocia HTTP/2 en conexiones sujetas a ATS, y la ruta de
+	     busqueda de TikTok exige HTTP/2: con el permiso global el telefono
+	     hablaba HTTP/1.1 y TikTok contestaba 200 con el cuerpo vacio (cabecera
+	     tt_orcas_res: 1), que es lo que parecia "no hay resultados".  El aviso
+	     medido del 18/10/2026 es que una excepcion por dominio NO basta
+	     mientras el permiso global siga puesto (el sistema sigue hablando
+	     HTTP/1.1 incluso con www.tiktok.com exigido a TLS 1.2), asi que ahora
+	     ATS se exige de verdad en toda la app.
+
+	     Los CDNs de TikTok se dejan relajados por si alguno flojea, aunque los
+	     medidos (v16m.tiktokcdn.com, v16-webapp.tiktok.com, ...) cumplen ATS de
+	     sobra: TLS 1.2 con ECDHE-ECDSA.  Lo que se pierde en iOS 9 es el relay
+	     por HTTP plano; NSAllowsLocalNetworking (iOS 10 en adelante) lo deja
+	     seguir funcionando en dispositivos nuevos. -->
 	<key>NSAppTransportSecurity</key>
 	<dict>
-		<!-- Cierto: se sigue permitiendo HTTP plano (el relay) y TLS flojo en
-		     los CDNs, tal como estaba. -->
 		<key>NSAllowsArbitraryLoads</key>
-		<true/>
+		<false/>
 		<key>NSAllowsArbitraryLoadsForMedia</key>
 		<true/>
-		<!-- Menos en www.tiktok.com, donde se EXIGE ATS de verdad.  No es por
-		     seguridad: es porque iOS solo negocia HTTP/2 en conexiones sujetas
-		     a ATS, y la ruta de busqueda de TikTok exige HTTP/2.  Con el
-		     permiso global el telefono hablaba HTTP/1.1 y TikTok contestaba
-		     200 con el cuerpo vacio (cabecera tt_orcas_res: 1), que es lo que
-		     parecia "no hay resultados".  Un diccionario de excepcion hace que
-		     ATS ignore las claves globales para ese dominio (lo documenta
-		     Apple: "Domains you specify in that dictionary aren't affected by
-		     this key's value"). -->
+		<key>NSAllowsLocalNetworking</key>
+		<true/>
 		<key>NSExceptionDomains</key>
 		<dict>
+			<!-- El dominio de la API y del feed: ATS de verdad, sin relajacion.
+			     Es el que tiene que negociar HTTP/2. -->
 			<key>www.tiktok.com</key>
 			<dict>
 				<key>NSExceptionAllowsInsecureHTTPLoads</key>
@@ -71,6 +74,84 @@
 				<true/>
 				<key>NSExceptionMinimumTLSVersion</key>
 				<string>TLSv1.2</string>
+			</dict>
+			<!-- Los CDNs, relajados: son miniaturas, musica y video. -->
+			<key>tiktokcdn.com</key>
+			<dict>
+				<key>NSIncludesSubdomains</key>
+				<true/>
+				<key>NSExceptionAllowsInsecureHTTPLoads</key>
+				<true/>
+				<key>NSExceptionRequiresForwardSecrecy</key>
+				<false/>
+				<key>NSExceptionMinimumTLSVersion</key>
+				<string>TLSv1.0</string>
+			</dict>
+			<key>tiktokcdn-us.com</key>
+			<dict>
+				<key>NSIncludesSubdomains</key>
+				<true/>
+				<key>NSExceptionAllowsInsecureHTTPLoads</key>
+				<true/>
+				<key>NSExceptionRequiresForwardSecrecy</key>
+				<false/>
+				<key>NSExceptionMinimumTLSVersion</key>
+				<string>TLSv1.0</string>
+			</dict>
+			<key>tiktokv.com</key>
+			<dict>
+				<key>NSIncludesSubdomains</key>
+				<true/>
+				<key>NSExceptionAllowsInsecureHTTPLoads</key>
+				<true/>
+				<key>NSExceptionRequiresForwardSecrecy</key>
+				<false/>
+				<key>NSExceptionMinimumTLSVersion</key>
+				<string>TLSv1.0</string>
+			</dict>
+			<key>ttwstatic.com</key>
+			<dict>
+				<key>NSIncludesSubdomains</key>
+				<true/>
+				<key>NSExceptionAllowsInsecureHTTPLoads</key>
+				<true/>
+				<key>NSExceptionRequiresForwardSecrecy</key>
+				<false/>
+				<key>NSExceptionMinimumTLSVersion</key>
+				<string>TLSv1.0</string>
+			</dict>
+			<key>ibyteimg.com</key>
+			<dict>
+				<key>NSIncludesSubdomains</key>
+				<true/>
+				<key>NSExceptionAllowsInsecureHTTPLoads</key>
+				<true/>
+				<key>NSExceptionRequiresForwardSecrecy</key>
+				<false/>
+				<key>NSExceptionMinimumTLSVersion</key>
+				<string>TLSv1.0</string>
+			</dict>
+			<key>byteoversea.com</key>
+			<dict>
+				<key>NSIncludesSubdomains</key>
+				<true/>
+				<key>NSExceptionAllowsInsecureHTTPLoads</key>
+				<true/>
+				<key>NSExceptionRequiresForwardSecrecy</key>
+				<false/>
+				<key>NSExceptionMinimumTLSVersion</key>
+				<string>TLSv1.0</string>
+			</dict>
+			<key>muscdn.com</key>
+			<dict>
+				<key>NSIncludesSubdomains</key>
+				<true/>
+				<key>NSExceptionAllowsInsecureHTTPLoads</key>
+				<true/>
+				<key>NSExceptionRequiresForwardSecrecy</key>
+				<false/>
+				<key>NSExceptionMinimumTLSVersion</key>
+				<string>TLSv1.0</string>
 			</dict>
 		</dict>
 	</dict>

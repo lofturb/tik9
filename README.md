@@ -462,6 +462,12 @@ Con `--token`, hay que añadir `?t=ELTOKEN` (o la cabecera `X-Tik9-Token`).
 En el dispositivo, pon en Ajustes la IP **de tu PC en la red local**
 (`ipconfig` en Windows) y el mismo puerto.
 
+> **Ojo (iOS 9):** la app exige ATS de verdad (`NSAllowsArbitraryLoads = false`,
+> ver *Cómo funciona*), así que iOS 9 **no** deja hablar HTTP plano con el relay:
+> en ese sistema el modo relay solo valdría por HTTPS con un certificado de
+> confianza. La clave `NSAllowsLocalNetworking` deja el relay por HTTP funcionando
+> en iOS 10 en adelante.
+
 > **Ojo:** el relay sólo funciona mientras tu PC esté encendido, y ambos
 > dispositivos tienen que estar en la misma red. Por eso **el modo directo es el
 > recomendado** y el relay es el plan B.
