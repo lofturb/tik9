@@ -167,8 +167,8 @@ if [ ! -f "$DESTINO/lib/libnghttp2.a" ]; then
         -DCMAKE_C_FLAGS="$OBJETIVO" \
         -DCMAKE_CXX_FLAGS="$OBJETIVO" \
         -DCMAKE_BUILD_TYPE=Release \
-        -DENABLE_SHARED_LIB=OFF \
-        -DENABLE_STATIC_LIB=ON \
+        -DBUILD_SHARED_LIBS=OFF \
+        -DBUILD_STATIC_LIBS=ON \
         -DENABLE_LIB_ONLY=ON \
         -DENABLE_APP=OFF \
         -DENABLE_EXAMPLES=OFF \
