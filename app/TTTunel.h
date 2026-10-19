@@ -7,10 +7,17 @@
  * misma IP publica; entra desde una pila moderna y no entra desde el iPad.
  *
  * Este modulo habla con TikTok usando:
- *   - BoringSSL, la biblioteca TLS de Chrome (con su lista de cifrados, sus
- *     curvas y GREASE), que es la que tiene por buena la barrera;
- *   - nghttp2, para armar HTTP/2 con los ajustes de un navegador (ventana
- *     grande, prioridades, etc.) y no con los de Apple de 2015.
+ *   - BoringSSL, la biblioteca TLS de Chrome, con el saludo de un Chrome de
+ *     verdad: su lista de cifrados, sus curvas (incluido el grupo post-cuantico
+ *     X25519Kyber768Draft00), sus algoritmos de firma, GREASE, las extensiones
+ *     permutadas, ECH de relleno y la compresion de certificados;
+ *   - nghttp2, para armar HTTP/2 con los ajustes exactos de Chrome (tabla de
+ *     cabeceras de 64 kB, ventana inicial de 6 MB, ventana de conexion de
+ *     15 663 105, sin tramas de prioridad) y no con los de Apple de 2015.
+ *
+ * La referencia esta medida: la huella de un Chrome que si entra es
+ * ja4 t13d1516h2_8daaf6152771_02713d6af862 y, en HTTP/2, la de Akamai
+ * 1:65536;2:0;4:6291456;6:262144|15663105|0|m,a,s,p (ver HALLAZGOS.md 4 nonies).
  *
  * La comprobacion del certificado no la puede hacer BoringSSL: en iOS no hay
  * acceso a las raices del sistema (SecTrustCopyAnchorCertificates esta marcada
@@ -36,14 +43,22 @@
 extern "C" {
 #endif
 
+/* Una cabecera de la peticion, tal cual se manda (sin los dos puntos). */
+typedef struct {
+    const char *nombre;
+    const char *valor;
+} tt_cabecera;
+
 typedef struct {
     long estado;         /* codigo HTTP (:status) o 0 si no se llego a hablar */
     long largo;          /* bytes del cuerpo */
     char *cuerpo;        /* cuerpo en crudo (malloc); se suelta con tt_tunel_soltar */
     char orcas[64];      /* cabecera tt_orcas_res, si vino */
     char ms_token[512];  /* cabecera x-ms-token, si vino (TikTok la regala al rechazar) */
+    char cookie[512];    /* ttwid que venga en set-cookie, si viene */
     char error[256];     /* que fallo, en castellano, si algo fallo */
     char tls[96];        /* version de TLS y cifrado negociados, para el informe */
+    char huella[192];    /* que partes del saludo de Chrome se pudieron poner */
     int verificado;      /* 1 si el certificado se comprobo contra las raices del sistema */
 } tt_tunel_respuesta;
 
@@ -58,12 +73,12 @@ void tt_tunel_descripcion(char *salida, size_t tam);
  * salida->estado), -1 si no se pudo ni conectar.  En los dos casos rellena
  * salida->error cuando hay algo que contar.
  *
- * Los parametros sueltos (ua, referer, origin, cookie) pueden ser NULL: los que
- * no se pasen no se mandan.
+ * Las cabeceras van en el orden en que se mandan: los cuatro pseudo-cabeceras
+ * (":method", ":authority", ":scheme", ":path") los pone el modulo, y despues
+ * van las que se pasen aqui, tal cual y en este orden.
  */
 int tt_tunel_pedir(const char *host, const char *ruta,
-                   const char *ua, const char *aceptar, const char *idioma,
-                   const char *referer, const char *origen, const char *cookie,
+                   const tt_cabecera *cabeceras, size_t cuantas,
                    tt_tunel_respuesta *salida);
 
 /* Libera el cuerpo de una respuesta.  Se puede llamar dos veces sin problema. */

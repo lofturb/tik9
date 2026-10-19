@@ -79,7 +79,9 @@ Tik9_LDFLAGS = -Wl,-dead_strip -lc++ -lc++abi
 # ---------------------------------------------------------------------------
 ifneq ($(TUNEL_DIR),)
 Tik9_CFLAGS += -I$(TUNEL_DIR)/include -DTT_TUNEL=1
-Tik9_LDFLAGS += -L$(TUNEL_DIR)/lib -lssl -lcrypto -lnghttp2
+# -lz es la zlib del sistema: sirve para leer el certificado comprimido que
+# Chrome dice saber leer (extension 27 del saludo TLS).
+Tik9_LDFLAGS += -L$(TUNEL_DIR)/lib -lssl -lcrypto -lnghttp2 -lz
 endif
 
 include $(THEOS_MAKE_PATH)/application.mk

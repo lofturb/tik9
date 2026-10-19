@@ -43,8 +43,11 @@
 #include <Security/Security.h>
 
 #include <openssl/err.h>
+#include <openssl/pool.h>
 #include <openssl/ssl.h>
 #include <openssl/x509.h>
+
+#include <zlib.h>
 
 #if __has_include(<nghttp2/nghttp2.h>)
 #include <nghttp2/nghttp2.h>
@@ -65,6 +68,7 @@ typedef struct {
     long estado;
     char orcas[64];
     char ms_token[512];
+    char cookie[512];
     int cerrado;
     int fallo;
 } tt_conexion;
@@ -115,6 +119,27 @@ static int tt_cabecera(nghttp2_session *sesion, const nghttp2_frame *marco,
         size_t copiar = largo_valor < sizeof c->ms_token - 1 ? largo_valor : sizeof c->ms_token - 1;
         memcpy(c->ms_token, valor, copiar);
         c->ms_token[copiar] = '\0';
+        return 0;
+    }
+    /* set-cookie: interesa el ttwid, que es la identidad anonima que da TikTok.
+       Se guarda el primero que venga; los demas (tt_chain_token, etc.) no hacen
+       falta aqui. */
+    if (largo_nombre == 10 && memcmp(nombre, "set-cookie", 10) == 0 &&
+        !c->cookie[0]) {
+        static const char que[] = "ttwid=";
+        const size_t largo_que = sizeof que - 1;
+        for (size_t i = 0; i + largo_que <= largo_valor; i++) {
+            if (memcmp(valor + i, que, largo_que) != 0) continue;
+            size_t j = i + largo_que;
+            size_t n = 0;
+            while (j + n < largo_valor && valor[j + n] != ';' &&
+                   n < sizeof c->cookie - 1) {
+                c->cookie[n] = (char)valor[j + n];
+                n++;
+            }
+            c->cookie[n] = '\0';
+            break;
+        }
     }
     return 0;
 }
@@ -287,8 +312,64 @@ static int tt_conectar(const char *host, char *error, size_t tam) {
     return elegido;
 }
 
-/* Arma el contexto TLS con la huella de Chrome. */
-static SSL_CTX *tt_contexto(void) {
+/* --- saludo TLS con la huella de Chrome ------------------------------------ */
+
+/*
+ * Lista de algoritmos de firma de un Chrome (los ocho, en este orden).  En el
+ * JA4 -- la huella de TLS que se usa hoy -- esta lista entra tal cual, asi que
+ * el orden y el contenido importan: no es lo mismo mandar los de fabrica de
+ * BoringSSL.
+ */
+#define TT_SIGALGS \
+    "ecdsa_secp256r1_sha256:rsa_pss_rsae_sha256:rsa_pkcs1_sha256:" \
+    "ecdsa_secp384r1_sha384:rsa_pss_rsae_sha384:rsa_pkcs1_sha384:" \
+    "rsa_pss_rsae_sha512:rsa_pkcs1_sha512"
+
+/* Grupos de Chrome, con el post-cuantico delante (25519 kyber, el 25497). */
+#define TT_GRUPOS "X25519Kyber768Draft00:X25519:P-256:P-384"
+
+/*
+ * Chrome le dice al servidor que puede recibir el certificado comprimido con
+ * zlib (la extension 27 del saludo).  Aqui se registra esa descompresion de
+ * verdad, con la zlib del propio iOS: asi la extension aparece como en un
+ * Chrome y, si el servidor comprime el certificado, se sabe leer.
+ *
+ * Chrome ofrece ademas brotli; aqui no, porque iOS 9 no trae brotli y no tiene
+ * sentido decir que se sabe leer algo que no se sabe leer.
+ */
+static int tt_descomprimir_zlib(SSL *tls, CRYPTO_BUFFER **salida,
+                                size_t sin_comprimir, const uint8_t *entrada,
+                                size_t largo) {
+    (void)tls;
+    uint8_t *destino = NULL;
+    CRYPTO_BUFFER *tampon = CRYPTO_BUFFER_alloc(&destino, sin_comprimir);
+    if (!tampon) return 0;
+    uLongf cuantos = (uLongf)sin_comprimir;
+    if (uncompress(destino, &cuantos, entrada, (uLong)largo) != Z_OK ||
+        cuantos != (uLongf)sin_comprimir) {
+        CRYPTO_BUFFER_free(tampon);
+        return 0;
+    }
+    *salida = tampon;
+    return 1;
+}
+
+/* Va apuntando en una linea que partes del saludo se pudieron poner. */
+static void tt_nota(char *nota, size_t tam, const char *texto) {
+    if (!nota || tam == 0) return;
+    size_t ya = strlen(nota);
+    if (ya + 2 >= tam) return;
+    snprintf(nota + ya, tam - ya, "%s%s", ya ? ", " : "", texto);
+}
+
+/*
+ * Arma el contexto TLS con la huella de Chrome.  En 'nota' deja escrito que
+ * partes se pudieron configurar: si esta version de BoringSSL no acepta alguna
+ * lista, se vera en el informe en vez de quedarse en silencio.
+ */
+static SSL_CTX *tt_contexto(char *nota, size_t tam) {
+    if (nota && tam) nota[0] = '\0';
+
     SSL_CTX *ctx = SSL_CTX_new(TLS_method());
     if (!ctx) return NULL;
 
@@ -306,19 +387,35 @@ static SSL_CTX *tt_contexto(void) {
         "ECDHE-RSA-AES128-SHA:ECDHE-RSA-AES256-SHA:"
         "AES128-GCM-SHA256:AES256-GCM-SHA384:AES128-SHA:AES256-SHA");
 
-    /* Curvas de Chrome. */
-    SSL_CTX_set1_groups_list(ctx, "X25519:P-256:P-384");
+    if (SSL_CTX_set1_sigalgs_list(ctx, TT_SIGALGS)) tt_nota(nota, tam, "sigalgs");
+    else tt_nota(nota, tam, "sigalgs NO");
+
+    if (SSL_CTX_set1_groups_list(ctx, TT_GRUPOS)) tt_nota(nota, tam, "grupos");
+    else tt_nota(nota, tam, "grupos NO");
+
+    if (SSL_CTX_add_cert_compression_alg(ctx, 1 /* zlib */, NULL,
+                                         tt_descomprimir_zlib)) {
+        tt_nota(nota, tam, "zlib");
+    } else {
+        tt_nota(nota, tam, "zlib NO");
+    }
 
     /* GREASE y extensiones permutadas: sin esto el saludo TLS se delata como
        "no es un navegador".  Son cosas de BoringSSL, la biblioteca de Chrome. */
 #ifdef OPENSSL_IS_BORINGSSL
     SSL_CTX_set_grease_enabled(ctx, 1);
     SSL_CTX_set_permute_extensions(ctx, 1);
+    tt_nota(nota, tam, "grease");
 #endif
 
-    /* ALPN: h2 primero, como un navegador. */
+    /* ALPN: h2 primero, como un navegador.  De aqui sale tambien la extension
+       de ajustes de aplicacion (ALPS) que manda Chrome. */
     static const unsigned char protocolos[] = { 2, 'h', '2', 8, 'h', 't', 't', 'p', '/', '1', '.', '1' };
-    SSL_CTX_set_alpn_protos(ctx, protocolos, sizeof protocolos);
+    if (SSL_CTX_set_alpn_protos(ctx, protocolos, sizeof protocolos) == 0) {
+        tt_nota(nota, tam, "alpn");
+    } else {
+        tt_nota(nota, tam, "alpn NO");
+    }
 
     /* La comprobacion del certificado la hace el sistema despues del saludo
        (ver tt_verificar_certificado): aqui no se le pide a BoringSSL, que no
@@ -336,6 +433,14 @@ static SSL *tt_saludo(SSL_CTX *ctx, int fd, const char *host, char *error, size_
     }
     SSL_set_fd(tls, fd);
     SSL_set_tlsext_host_name(tls, host);
+#ifdef OPENSSL_IS_BORINGSSL
+    /* Las dos extensiones que Chrome manda y que se piden por conexion: el ECH
+       de relleno (65037) y la peticion de sellos de tiempo del certificado
+       (18).  Con esto el saludo lleva las mismas 16 extensiones que un Chrome
+       (menos brotli, que iOS 9 no trae). */
+    SSL_set_enable_ech_grease(tls, 1);
+    SSL_enable_signed_cert_timestamps(tls);
+#endif
     int r = SSL_connect(tls);
     if (r != 1) {
         unsigned long cola = ERR_get_error();
@@ -356,8 +461,7 @@ static SSL *tt_saludo(SSL_CTX *ctx, int fd, const char *host, char *error, size_
                    strlen(nombre), strlen(valor), NGHTTP2_NV_FLAG_NONE })
 
 static int tt_pedir_con(SSL *tls, const char *host, const char *ruta,
-                        const char *ua, const char *aceptar, const char *idioma,
-                        const char *referer, const char *origen, const char *cookie,
+                        const tt_cabecera *extra, size_t cuantas_extra,
                         tt_conexion *c, char *error, size_t tam) {
     c->tls = tls;
 
@@ -391,18 +495,18 @@ static int tt_pedir_con(SSL *tls, const char *host, const char *ruta,
     /* Ventana de conexion de Chrome (15728640 menos los 65535 de fabrica). */
     nghttp2_submit_window_update(sesion, NGHTTP2_FLAG_NONE, 0, 15663105);
 
-    nghttp2_nv cabeceras[12];
+    /* Cuatro para las pseudo-cabeceras y sitio de sobra para las que traiga el
+       que llama (un Chrome manda trece). */
+    nghttp2_nv cabeceras[32];
     size_t cuantas = 0;
     cabeceras[cuantas++] = TT_NV(":method", "GET");
     cabeceras[cuantas++] = TT_NV(":authority", host);
     cabeceras[cuantas++] = TT_NV(":scheme", "https");
     cabeceras[cuantas++] = TT_NV(":path", ruta);
-    if (ua)      cabeceras[cuantas++] = TT_NV("user-agent", ua);
-    if (aceptar) cabeceras[cuantas++] = TT_NV("accept", aceptar);
-    if (idioma)  cabeceras[cuantas++] = TT_NV("accept-language", idioma);
-    if (referer) cabeceras[cuantas++] = TT_NV("referer", referer);
-    if (origen)  cabeceras[cuantas++] = TT_NV("origin", origen);
-    if (cookie && cookie[0]) cabeceras[cuantas++] = TT_NV("cookie", cookie);
+    for (size_t i = 0; i < cuantas_extra && cuantas < 32; i++) {
+        if (!extra[i].nombre || !extra[i].valor) continue;
+        cabeceras[cuantas++] = TT_NV(extra[i].nombre, extra[i].valor);
+    }
 
     int32_t flujo = nghttp2_submit_request(sesion, NULL, cabeceras, cuantas, NULL, NULL);
     if (flujo < 0) {
@@ -503,8 +607,7 @@ void tt_tunel_soltar(tt_tunel_respuesta *respuesta) {
 }
 
 int tt_tunel_pedir(const char *host, const char *ruta,
-                   const char *ua, const char *aceptar, const char *idioma,
-                   const char *referer, const char *origen, const char *cookie,
+                   const tt_cabecera *cabeceras, size_t cuantas,
                    tt_tunel_respuesta *salida) {
     if (!salida) return -1;
     memset(salida, 0, sizeof *salida);
@@ -514,7 +617,7 @@ int tt_tunel_pedir(const char *host, const char *ruta,
     }
 
     ERR_clear_error();
-    SSL_CTX *ctx = tt_contexto();
+    SSL_CTX *ctx = tt_contexto(salida->huella, sizeof salida->huella);
     if (!ctx) {
         snprintf(salida->error, sizeof salida->error, "no se pudo crear el contexto TLS");
         return -1;
@@ -559,14 +662,15 @@ int tt_tunel_pedir(const char *host, const char *ruta,
 
     tt_conexion conexion;
     memset(&conexion, 0, sizeof conexion);
-    int r = tt_pedir_con(tls, host, ruta, ua, aceptar, idioma, referer, origen,
-                         cookie, &conexion, salida->error, sizeof salida->error);
+    int r = tt_pedir_con(tls, host, ruta, cabeceras, cuantas, &conexion,
+                         salida->error, sizeof salida->error);
 
     salida->estado = conexion.estado;
     salida->largo = (long)conexion.largo;
     salida->cuerpo = conexion.datos;
     snprintf(salida->orcas, sizeof salida->orcas, "%s", conexion.orcas);
     snprintf(salida->ms_token, sizeof salida->ms_token, "%s", conexion.ms_token);
+    snprintf(salida->cookie, sizeof salida->cookie, "%s", conexion.cookie);
     if (conexion.pasado_de_tope) {
         snprintf(salida->error, sizeof salida->error,
                  "la respuesta pasaba de %d MB y se corto", TT_TUNEL_TOPE_CUERPO / (1024 * 1024));
@@ -600,11 +704,9 @@ void tt_tunel_soltar(tt_tunel_respuesta *respuesta) {
 }
 
 int tt_tunel_pedir(const char *host, const char *ruta,
-                   const char *ua, const char *aceptar, const char *idioma,
-                   const char *referer, const char *origen, const char *cookie,
+                   const tt_cabecera *cabeceras, size_t cuantas,
                    tt_tunel_respuesta *salida) {
-    (void)host; (void)ruta; (void)ua; (void)aceptar; (void)idioma;
-    (void)referer; (void)origen; (void)cookie;
+    (void)host; (void)ruta; (void)cabeceras; (void)cuantas;
     if (salida) {
         memset(salida, 0, sizeof *salida);
         snprintf(salida->error, sizeof salida->error,

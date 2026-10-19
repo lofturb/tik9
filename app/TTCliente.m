@@ -65,6 +65,27 @@ static NSError *TTError(TTCodigoError codigo, NSString *texto) {
                  pasos:(NSMutableArray *)pasos
                 lineas:(NSMutableArray *)lineas
             completado:(void (^)(void))completado;
+// Las cabeceras de un navegador de verdad (el mismo Chrome/Edge que dice el
+// User-Agent), en el orden en que las manda, como parejas nombre/valor.
+- (NSArray *)cabecerasDeNavegadorConUA:(NSString *)ua
+                               referer:(NSString *)referer
+                                cookie:(NSString *)cookie;
+// Una peticion por el tunel, ya resuelta a objetos de Objective-C.  Bloquea:
+// se llama desde una cola de fondo.
+- (NSDictionary *)pedirPorElTunelHost:(NSString *)host
+                                 ruta:(NSString *)ruta
+                           cabeceras:(NSArray *)cabeceras;
+// Un texto apto para ir en una dirección (la palabra buscada, por ejemplo).
+- (NSString *)escapadoDeURL:(NSString *)texto;
+// Mide la huella del tunel contra el oraculo publico tls.peet.ws y la compara
+// con la de un Chrome que si entra.
+- (void)casoDeHuellaPorElTunel:(NSMutableArray *)lineas
+                    completado:(void (^)(void))completado;
+// Pide una identidad nueva (ttwid) por el propio tunel y repite la busqueda con
+// ella: sirve para saber si la barrera ata la identidad a la conexion.
+- (void)casoDeIdentidadPorElTunel:(NSString *)palabra
+                           lineas:(NSMutableArray *)lineas
+                       completado:(void (^)(void))completado;
 - (NSArray *)videosDeRespuestaDeBusqueda:(NSDictionary *)json;
 - (void)pedirRuta:(NSString *)ruta
             pares:(NSArray *)pares
@@ -508,12 +529,27 @@ static NSError *TTError(TTCodigoError codigo, NSString *texto) {
     // La bateria para en cuanto una variante trae videos.  La G va la primera
     // porque es la que se esta probando: si el tunel entra, el diagnostico
     // termina en un par de peticiones en vez de en una docena.
+    //
+    //  G: el tunel tal cual, ya con el saludo TLS afinado y las cabeceras de un
+    //     Chrome de verdad (que es lo que TikTok tiene por bueno).
+    //  H: la identidad se pide por el propio tunel y se repite la busqueda con
+    //     ella.  Si el tunel funciona solo con identidad nueva, la barrera ata
+    //     la identidad a la conexion que la emitio.
+    //  I: se mide la huella del tunel en tls.peet.ws y se compara con la de un
+    //     Chrome que si entra (JA4 y la huella de HTTP/2 de Akamai).
     NSMutableArray *casos = [NSMutableArray array];
     if (tt_tunel_hay()) {
-        [casos addObject:@{ @"etq": @"G por el tunel (BoringSSL + HTTP/2)", @"intentos": @2,
+        [casos addObject:@{ @"etq": @"G por el tunel con el saludo y las cabeceras de Chrome",
+                            @"intentos": @2,
                             @"ruta": @"/api/search/general/full/",
                             @"pares": [self paresDeBusqueda:palabra],
+                            @"palabra": palabra,
+                            @"navegador": @YES,
                             @"tunel": @YES }];
+        [casos addObject:@{ @"etq": @"H identidad nueva pedida por el tunel",
+                            @"identidadPorElTunel": palabra }];
+        [casos addObject:@{ @"etq": @"I huella del tunel",
+                            @"huella": @YES }];
     }
     [casos addObjectsFromArray:@[
         @{ @"etq": @"A tal cual (como la app)", @"intentos": @3,
@@ -562,6 +598,15 @@ static NSError *TTError(TTCodigoError codigo, NSString *texto) {
 
     // Las variantes que van por el tunel (pila TLS + HTTP/2 propia) no usan
     // NSURLSession, asi que tienen su propio camino.
+    if (caso[@"identidadPorElTunel"]) {
+        [self casoDeIdentidadPorElTunel:caso[@"identidadPorElTunel"]
+                                 lineas:lineas completado:completado];
+        return;
+    }
+    if ([caso[@"huella"] boolValue]) {
+        [self casoDeHuellaPorElTunel:lineas completado:completado];
+        return;
+    }
     if ([caso[@"tunel"] boolValue]) {
         [self intentoDeTunel:caso intento:intento pasos:pasos lineas:lineas
                   completado:completado];
@@ -619,6 +664,86 @@ static NSError *TTError(TTCodigoError codigo, NSString *texto) {
     }];
 }
 
+// Las cabeceras de un navegador de verdad, en el orden en que las manda
+// (alfabetico salvo las cuatro pseudo-cabeceras, que las pone el tunel).
+//
+// El User-Agent de la app dice Edge 122 sobre Windows, asi que lo que se manda
+// tiene que ser coherente con eso: los sec-ch-ua con la misma version y la
+// misma plataforma, sec-fetch-* como una peticion de la propia pagina, y nada
+// de Origin (un GET de la misma pagina no lo lleva).  Una cabecera que se
+// contradice con el User-Agent es una de las cosas que mas canta.
+- (NSArray *)cabecerasDeNavegadorConUA:(NSString *)ua
+                               referer:(NSString *)referer
+                                cookie:(NSString *)cookie {
+    NSMutableArray *pares = [NSMutableArray array];
+    [pares addObject:@[ @"accept", @"*/*" ]];
+    // gzip y deflate son lo que sabemos leer de verdad (zlib).  Chrome 122
+    // manda ademas "br", pero iOS 9 no trae brotli y no se va a decir que se
+    // sabe leer lo que no se sabe leer.
+    [pares addObject:@[ @"accept-encoding", @"gzip, deflate" ]];
+    [pares addObject:@[ @"accept-language", @"en-US,en;q=0.9" ]];
+    if (cookie.length) [pares addObject:@[ @"cookie", cookie ]];
+    [pares addObject:@[ @"priority", @"u=1, i" ]];
+    if (referer.length) [pares addObject:@[ @"referer", referer ]];
+    NSString *marca = [ua rangeOfString:@"Edg/"].location != NSNotFound
+                      ? @"Microsoft Edge" : @"Google Chrome";
+    [pares addObject:@[ @"sec-ch-ua", [NSString stringWithFormat:
+        @"\"Chromium\";v=\"122\", \"Not(A:Brand\";v=\"24\", \"%@\";v=\"122\"", marca] ]];
+    [pares addObject:@[ @"sec-ch-ua-mobile", @"?0" ]];
+    [pares addObject:@[ @"sec-ch-ua-platform", @"\"Windows\"" ]];
+    [pares addObject:@[ @"sec-fetch-dest", @"empty" ]];
+    [pares addObject:@[ @"sec-fetch-mode", @"cors" ]];
+    [pares addObject:@[ @"sec-fetch-site", @"same-origin" ]];
+    [pares addObject:@[ @"user-agent", ua ]];
+    return pares;
+}
+
+- (NSString *)escapadoDeURL:(NSString *)texto {
+    NSCharacterSet *validos = [NSCharacterSet URLQueryAllowedCharacterSet];
+    return [texto stringByAddingPercentEncodingWithAllowedCharacters:validos] ?: @"";
+}
+
+// Una peticion por el tunel, ya resuelta a objetos de Objective-C.  Bloquea:
+// se llama desde una cola de fondo.  Las cadenas de las cabeceras tienen que
+// seguir vivas mientras dura la llamada, y lo estan (las lleva el arreglo).
+- (NSDictionary *)pedirPorElTunelHost:(NSString *)host
+                                 ruta:(NSString *)ruta
+                           cabeceras:(NSArray *)cabeceras {
+    NSUInteger cuantas = cabeceras.count;
+    tt_cabecera *lista = (tt_cabecera *)calloc(cuantas ? cuantas : 1,
+                                               sizeof(tt_cabecera));
+    if (!lista) return @{ @"error": @"sin memoria", @"datos": [NSData data] };
+
+    for (NSUInteger i = 0; i < cuantas; i++) {
+        NSArray *par = cabeceras[i];
+        lista[i].nombre = [par[0] UTF8String];
+        lista[i].valor = [(par.count > 1 ? par[1] : @"") UTF8String];
+    }
+
+    tt_tunel_respuesta r;
+    memset(&r, 0, sizeof r);
+    int resultado = tt_tunel_pedir(host.UTF8String, ruta.UTF8String,
+                                   lista, cuantas, &r);
+
+    NSMutableDictionary *salida = [NSMutableDictionary dictionary];
+    salida[@"ok"] = @(resultado == 0);
+    salida[@"estado"] = @(r.estado);
+    salida[@"verificado"] = @(r.verificado != 0);
+    salida[@"datos"] = (r.largo > 0 && r.cuerpo)
+                       ? [NSData dataWithBytes:r.cuerpo length:(NSUInteger)r.largo]
+                       : [NSData data];
+    salida[@"orcas"] = r.orcas[0] ? [NSString stringWithUTF8String:r.orcas] : @"";
+    salida[@"ms_token"] = r.ms_token[0] ? [NSString stringWithUTF8String:r.ms_token] : @"";
+    salida[@"cookie"] = r.cookie[0] ? [NSString stringWithUTF8String:r.cookie] : @"";
+    salida[@"tls"] = r.tls[0] ? [NSString stringWithUTF8String:r.tls] : @"";
+    salida[@"huella"] = r.huella[0] ? [NSString stringWithUTF8String:r.huella] : @"";
+    salida[@"error"] = r.error[0] ? [NSString stringWithUTF8String:r.error] : @"";
+
+    tt_tunel_soltar(&r);
+    free(lista);
+    return salida;
+}
+
 // Una pasada por el tunel.  La firma se rehace en cada intento (con el msToken
 // que TikTok haya regalado en el anterior), igual que en la busqueda de verdad.
 - (void)intentoDeTunel:(NSDictionary *)caso
@@ -638,37 +763,28 @@ static NSError *TTError(TTCodigoError codigo, NSString *texto) {
     }
 
     NSString *ruta = [NSString stringWithFormat:@"%@?%@", caso[@"ruta"], firmado];
-    NSMutableDictionary *cabeceras = [NSMutableDictionary dictionaryWithDictionary:
-                                      [[TTSesion compartida] cabecerasBase]];
-    cabeceras[@"User-Agent"] = ua;
-    for (NSString *clave in caso[@"omitir"]) [cabeceras removeObjectForKey:clave];
+    NSString *referer = [NSString stringWithFormat:@"https://www.tiktok.com/search?q=%@",
+                         [self escapadoDeURL:caso[@"palabra"] ?: @""]];
+    NSString *cookie = [[TTSesion compartida] cabecerasBase][@"Cookie"];
+    NSArray *cabeceras = [self cabecerasDeNavegadorConUA:ua referer:referer
+                                                  cookie:cookie];
 
     // El tunel bloquea (hace su propia conexion y espera), asi que va fuera de
     // la cola principal: si no, la app se quedaria congelada mientras prueba.
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-        tt_tunel_respuesta r;
-        memset(&r, 0, sizeof r);
-        int resultado = tt_tunel_pedir("www.tiktok.com",
-                                       ruta.UTF8String,
-                                       [cabeceras[@"User-Agent"] UTF8String],
-                                       [cabeceras[@"Accept"] UTF8String],
-                                       [cabeceras[@"Accept-Language"] UTF8String],
-                                       [cabeceras[@"Referer"] UTF8String],
-                                       [cabeceras[@"Origin"] UTF8String],
-                                       [cabeceras[@"Cookie"] UTF8String],
-                                       &r);
-        NSData *datos = (resultado == 0 && r.largo > 0 && r.cuerpo)
-                        ? [NSData dataWithBytes:r.cuerpo length:(NSUInteger)r.largo]
-                        : [NSData data];
-        NSInteger estadoHTTP = r.estado;
-        NSString *orcas = r.orcas[0] ? [NSString stringWithUTF8String:r.orcas] : @"";
-        NSString *nuevo = r.ms_token[0] ? [NSString stringWithUTF8String:r.ms_token] : @"";
-        NSString *tls = r.tls[0] ? [NSString stringWithUTF8String:r.tls] : @"";
-        NSString *fallo = r.error[0] ? [NSString stringWithUTF8String:r.error] : @"";
-        BOOL verificado = (r.verificado != 0);
-        tt_tunel_soltar(&r);
-
+        NSDictionary *r = [self pedirPorElTunelHost:@"www.tiktok.com" ruta:ruta
+                                          cabeceras:cabeceras];
         dispatch_async(dispatch_get_main_queue(), ^{
+            NSData *datos = r[@"datos"];
+            NSInteger estadoHTTP = [r[@"estado"] integerValue];
+            NSString *orcas = r[@"orcas"];
+            NSString *nuevo = r[@"ms_token"];
+            NSString *ttwid = r[@"cookie"];
+            NSString *tls = r[@"tls"];
+            NSString *huella = r[@"huella"];
+            NSString *fallo = r[@"error"];
+            BOOL verificado = [r[@"verificado"] boolValue];
+
             NSInteger estado = 0;
             NSDictionary *json = nil;
             if (datos.length) {
@@ -693,7 +809,9 @@ static NSError *TTError(TTCodigoError codigo, NSString *texto) {
             if (orcas.length) [paso appendFormat:@" orcas=%@", orcas];
             if (estado != 0) [paso appendFormat:@" status=%ld", (long)estado];
             if (nuevo.length) [paso appendFormat:@" regala=%lu", (unsigned long)nuevo.length];
+            if (ttwid.length) [paso appendFormat:@" ttwid=%lu", (unsigned long)ttwid.length];
             if (json) [paso appendFormat:@" videos=%lu", (unsigned long)videos];
+            if (huella.length) [paso appendFormat:@"  huella=%@", huella];
             if (tls.length) [paso appendFormat:@"  [%@%@]", tls,
                              verificado ? @"" : @", SIN VERIFICAR"];
             if (fallo.length) [paso appendFormat:@" error=%@", fallo];
@@ -713,6 +831,160 @@ static NSError *TTError(TTCodigoError codigo, NSString *texto) {
             }
             [lineas addObject:[NSString stringWithFormat:@"bateria %@: %@",
                                caso[@"etq"], [pasos componentsJoinedByString:@"   "]]];
+            completado();
+        });
+    });
+}
+
+// Mide la huella del tunel contra el oraculo publico tls.peet.ws, que devuelve
+// lo que ve el servidor: el JA4 de TLS y la huella de HTTP/2 que usa Akamai.
+// Se compara con la de un Chrome que si entra en TikTok (medida el 19/10/2026):
+//   ja4    t13d1516h2_8daaf6152771_02713d6af862
+//   akamai 1:65536;2:0;4:6291456;6:262144|15663105|0|m,a,s,p
+//          (hash 52d84b11737d980aef856699f885ca86)
+- (void)casoDeHuellaPorElTunel:(NSMutableArray *)lineas
+                    completado:(void (^)(void))completado {
+    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+        NSString *ua = [[TTSesion compartida] userAgent];
+        NSArray *cabeceras = [self cabecerasDeNavegadorConUA:ua
+                                                     referer:@"https://tls.peet.ws/"
+                                                      cookie:@""];
+        NSDictionary *r = [self pedirPorElTunelHost:@"tls.peet.ws" ruta:@"/api/all"
+                                          cabeceras:cabeceras];
+        dispatch_async(dispatch_get_main_queue(), ^{
+            NSData *datos = r[@"datos"];
+            id json = datos.length
+                      ? [NSJSONSerialization JSONObjectWithData:datos options:0 error:NULL]
+                      : nil;
+            NSString *referenciaJA4 = @"t13d1516h2_8daaf6152771_02713d6af862";
+            NSString *referenciaHash = @"52d84b11737d980aef856699f885ca86";
+
+            NSMutableString *linea = [NSMutableString stringWithFormat:
+                @"huella del tunel: HTTP %@, %lu B",
+                r[@"estado"], (unsigned long)datos.length];
+            if ([json isKindOfClass:[NSDictionary class]]) {
+                NSDictionary *j = json;
+                id tls = j[@"tls"];
+                id h2 = j[@"http2"];
+                NSString *ja4 = [tls isKindOfClass:[NSDictionary class]] ? tls[@"ja4"] : nil;
+                NSString *receta = [tls isKindOfClass:[NSDictionary class]] ? tls[@"ja4_r"] : nil;
+                NSString *hash = [h2 isKindOfClass:[NSDictionary class]] ? h2[@"akamai_fingerprint_hash"] : nil;
+                NSString *crudo = [h2 isKindOfClass:[NSDictionary class]] ? h2[@"akamai_fingerprint"] : nil;
+                if (ja4.length) {
+                    [linea appendFormat:@"  ja4=%@", ja4];
+                    [linea appendString:[ja4 isEqualToString:referenciaJA4]
+                                        ? @" (igual al Chrome que entra)"
+                                        : @" (DISTINTO del Chrome que entra)"];
+                }
+                // La receta en crudo: cifrados, extensiones y algoritmos de
+                // firma, para ver pieza a pieza que sobra o que falta.
+                if (receta.length) [linea appendFormat:@"  receta=%@", receta];
+                if (hash.length) {
+                    [linea appendFormat:@"  akamai=%@", hash];
+                    [linea appendString:[hash isEqualToString:referenciaHash]
+                                        ? @" (igual)" : @" (DISTINTO)"];
+                }
+                if (crudo.length) [linea appendFormat:@"  (%@)", crudo];
+            } else {
+                [linea appendString:@"  no trajo el JSON del oraculo"];
+            }
+            NSString *huella = r[@"huella"];
+            NSString *tls = r[@"tls"];
+            if (huella.length) [linea appendFormat:@"  ajustes=%@", huella];
+            if (tls.length) [linea appendFormat:@"  [%@%@]", tls,
+                             [r[@"verificado"] boolValue] ? @"" : @", SIN VERIFICAR"];
+            NSString *fallo = r[@"error"];
+            if (fallo.length) [linea appendFormat:@"  error=%@", fallo];
+            [lineas addObject:linea];
+            completado();
+        });
+    });
+}
+
+// Pide una identidad nueva (ttwid) por el propio tunel -- una ruta publica, sin
+// cookies -- y repite la busqueda con ella y la misma conexion de Chrome.  Si
+// asi entra, la barrera ata la identidad a la conexion que la emitio y la
+// solucion es pedirla siempre por el tunel.  Si no entra, no es eso.
+- (void)casoDeIdentidadPorElTunel:(NSString *)palabra
+                           lineas:(NSMutableArray *)lineas
+                       completado:(void (^)(void))completado {
+    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+        NSString *ua = [[TTSesion compartida] userAgent];
+        NSArray *sinCookie = [self cabecerasDeNavegadorConUA:ua
+                                                    referer:@"https://www.tiktok.com/"
+                                                     cookie:@""];
+        // 1) Una ruta publica (el detalle de un reto no esta vetado) para que
+        //    TikTok emita una identidad a ESTA conexion.
+        NSDictionary *identidad = [self pedirPorElTunelHost:@"www.tiktok.com"
+            ruta:@"/api/challenge/detail/?challengeName=auron"
+            cabeceras:sinCookie];
+        NSString *ttwid = identidad[@"cookie"];
+        if (!ttwid.length) {
+            // Si esa no la dio, la portada: cualquier respuesta del borde vale.
+            identidad = [self pedirPorElTunelHost:@"www.tiktok.com"
+                                           ruta:@"/" cabeceras:sinCookie];
+            ttwid = identidad[@"cookie"];
+        }
+
+        NSMutableString *linea = [NSMutableString stringWithFormat:
+            @"bateria H identidad nueva por el tunel: 1) HTTP %@, %lu B",
+            identidad[@"estado"],
+            (unsigned long)[(NSData *)identidad[@"datos"] length]];
+        [linea appendString:ttwid.length ? @" (ttwid nuevo)" : @" (NO dio ttwid)"];
+
+        BOOL logrado = NO;
+        if (ttwid.length) {
+            NSString *referer = [NSString stringWithFormat:
+                @"https://www.tiktok.com/search?q=%@", [self escapadoDeURL:palabra ?: @""]];
+            NSString *cookie = [NSString stringWithFormat:@"ttwid=%@", ttwid];
+            for (NSInteger intento = 1; intento <= 2; intento++) {
+                NSString *firmado = [self firmarPares:[self paresDeBusqueda:palabra] conUA:ua];
+                if (firmado.length == 0) {
+                    [linea appendString:@"   2) no se pudo firmar"];
+                    break;
+                }
+                NSDictionary *r = [self pedirPorElTunelHost:@"www.tiktok.com"
+                    ruta:[NSString stringWithFormat:@"/api/search/general/full/?%@", firmado]
+                    cabeceras:[self cabecerasDeNavegadorConUA:ua referer:referer cookie:cookie]];
+
+                NSData *datos = r[@"datos"];
+                NSInteger estado = 0;
+                NSDictionary *json = nil;
+                if (datos.length) {
+                    id j = [NSJSONSerialization JSONObjectWithData:datos options:0 error:NULL];
+                    if ([j isKindOfClass:[NSDictionary class]]) {
+                        json = j;
+                        estado = [self estadoDeBusqueda:json];
+                    }
+                }
+                NSUInteger videos = json ? [self videosDeRespuestaDeBusqueda:json].count : 0;
+                NSString *orcas = r[@"orcas"];
+                NSString *nuevo = r[@"ms_token"];
+                [linea appendFormat:@"   %ld) HTTP %@, %lu B", (long)(intento + 1),
+                 r[@"estado"], (unsigned long)datos.length];
+                if (orcas.length) [linea appendFormat:@" orcas=%@", orcas];
+                if (estado != 0) [linea appendFormat:@" status=%ld", (long)estado];
+                if (nuevo.length) [linea appendFormat:@" regala=%lu", (unsigned long)nuevo.length];
+                if (json) [linea appendFormat:@" videos=%lu", (unsigned long)videos];
+                NSString *fallo = r[@"error"];
+                if (fallo.length) [linea appendFormat:@" error=%@", fallo];
+
+                if (videos > 0) { logrado = YES; break; }
+                // Si regala un msToken, se firma otra vez con el (la otra mitad
+                // de la identidad) y se repite con el mismo ttwid.
+                if (nuevo.length) {
+                    [[TTSesion compartida] guardarMsTokenAprendido:nuevo];
+                    continue;
+                }
+                break;
+            }
+        } else {
+            [linea appendString:@"   2) sin ttwid nuevo, no se repite"];
+        }
+
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (logrado) self.bateriaLograda = YES;
+            [lineas addObject:linea];
             completado();
         });
     });
@@ -1077,13 +1349,24 @@ static NSError *TTError(TTCodigoError codigo, NSString *texto) {
 
     // Lo que dijo la prueba del tunel (el caso G), que es la que se investiga.
     NSString *lineaTunel = nil;
+    NSString *lineaIdentidad = nil;
+    NSString *lineaHuella = nil;
     for (NSString *linea in lineas) {
-        if ([linea hasPrefix:@"bateria G"]) { lineaTunel = linea; break; }
+        if ([linea hasPrefix:@"bateria G"]) lineaTunel = linea;
+        if ([linea hasPrefix:@"bateria H"]) lineaIdentidad = linea;
+        if ([linea hasPrefix:@"huella del tunel:"]) lineaHuella = linea;
     }
+
+    // ¿La huella medida es la de un Chrome que si entra?
+    BOOL huellaIgual = lineaHuella &&
+        [lineaHuella rangeOfString:@"(igual al Chrome que entra)"].location != NSNotFound &&
+        [lineaHuella rangeOfString:@"(DISTINTO)"].location == NSNotFound &&
+        [lineaHuella rangeOfString:@"(DISTINTO del Chrome que entra)"].location == NSNotFound;
 
     NSString *veredicto;
     if (salieron) {
         BOOL fueElTunel = (variante.length > 0 && [variante hasPrefix:@"G"]);
+        BOOL fueLaIdentidad = (variante.length > 0 && [variante hasPrefix:@"H"]);
         NSMutableString *texto = [NSMutableString stringWithFormat:
             @"La busqueda devuelve videos con la variante «%@».",
             variante.length ? variante : @"?"];
@@ -1091,6 +1374,11 @@ static NSError *TTError(TTCodigoError codigo, NSString *texto) {
             [texto appendString:@" El tunel (BoringSSL + HTTP/2) es la pieza que hacia "
                                  @"falta: la barrera miraba la huella de la conexion, no lo "
                                  @"que se pide."];
+        }
+        if (fueLaIdentidad) {
+            [texto appendString:@" Y lo que faltaba era la identidad: TikTok ata el ttwid a "
+                                 @"la conexion que lo emite, asi que hay que pedirlo por el "
+                                 @"mismo tunel antes de buscar."];
         }
         if (ganoSinVerificar) {
             [texto appendString:@" OJO: esa conexion no se pudo comprobar contra las raices "
@@ -1104,10 +1392,16 @@ static NSError *TTError(TTCodigoError codigo, NSString *texto) {
         veredicto = @"El tunel no llego a responder (mira el error de la prueba G, abajo): "
                     @"eso apunta a la conexion en si (red, DNS, saludo TLS), no a la "
                     @"barrera de TikTok.";
+    } else if (lineaTunel && huellaIgual) {
+        veredicto = @"El tunel ya presenta la misma huella TLS y de HTTP/2 que un Chrome que "
+                    @"entra (prueba I), y tampoco es la identidad (probado en la H con un "
+                    @"ttwid nuevo). Lo que queda es lo que se manda por dentro: la respuesta "
+                    @"completa y las cabeceras, que es donde hay que mirar ahora.";
     } else if (lineaTunel) {
-        veredicto = @"El tunel tampoco entra (orcas=1 tambien con el saludo de Chrome): la "
-                    @"barrera no se conforma con el TLS y el HTTP/2, hay que seguir afinando "
-                    @"la huella (orden de cabeceras, ajustes de HTTP/2, mas extensiones).";
+        veredicto = @"El tunel no entra todavia, pero ya se puede medir: la linea «huella del "
+                    @"tunel» (prueba I) trae el JA4 y la huella de HTTP/2 de Akamai, y la "
+                    @"receta en crudo dice que pieza sobra o falta respecto al Chrome que si "
+                    @"entra (cifrados, extensiones o algoritmos de firma).";
     } else if ([todo rangeOfString:@"conn=keep-alive"].location != NSNotFound) {
         veredicto = @"Las peticiones van por HTTP/1.1 y la busqueda necesita HTTP/2. "
                     @"Compara el eco de protocolo con la misma direccion en Safari del "
