@@ -459,8 +459,11 @@ static SSL *tt_saludo(SSL_CTX *ctx, int fd, const char *host, char *error, size_
        (menos brotli, que iOS 9 no trae). */
     SSL_set_enable_ech_grease(tls, 1);
     SSL_enable_signed_cert_timestamps(tls);
-    /* Las otras dos que faltaban para clavar las 16 extensiones de Chrome. */
+    /* Las dos que faltaban para clavar las 16 extensiones de Chrome. */
     SSL_enable_ocsp_stapling(tls);
+    /* El numero viejo de ALPS (17513), que es el que manda el Chrome de 2024;
+       BoringSSL, al dia, usaria el nuevo (17613) y no coincidiria. */
+    SSL_set_alps_use_new_codepoint(tls, 0);
     (void)SSL_add_application_settings(tls, (const uint8_t *)"h2", 2,
                                        tt_alps_h2, sizeof tt_alps_h2);
 #endif
