@@ -600,6 +600,32 @@ TikTok **ate la identidad (`ttwid`) a la conexión que la emitió**. Si es así,
 basta con presentar el saludo de Chrome: hay que pedirle la identidad al borde
 por esa misma conexión y buscar después con ella. La H lo hace y lo cuenta.
 
+### 4 decies. Lo que midió la 1.3.0 en el aparato (2026-10-19)
+
+El informe de la 1.3.0 trajo por fin la comparación pieza a pieza, y fue útil
+porque dejó el problema reducido a dos extensiones:
+
+* **Cifrados**: `8daaf6152771`, iguales ✓
+* **Algoritmos de firma**: `0403,0804,0401,0503,0805,0501,0806,0601`, iguales
+  y en el mismo orden ✓
+* **HTTP/2 de Akamai**: `52d84b11737d980aef856699f885ca86`, **idéntico** ✓
+* **JA4**: `t13d1514h2_…` frente al `t13d1516h2_…` de Chrome ✗ — el número del
+  medio es la cuenta de extensiones: **14 frente a 16**. La receta en crudo
+  enseñó cuáles faltaban: `0005` (status_request, pedir el OCSP) y `4469`
+  (17513, ALPS, los ajustes de HTTP/2 dentro del saludo).
+
+Y la prueba **H** descartó la identidad: con un `ttwid` nuevo pedido **por el
+túnel** y usado en la búsqueda, la respuesta siguió siendo `HTTP 200`, `0 B`,
+`orcas=1`. La identidad no está atada a la conexión que la emite; lo que pesa es
+la conexión en sí.
+
+La 1.3.1 pone esas dos extensiones con la API de BoringSSL —`SSL_enable_ocsp_stapling`
+y `SSL_add_application_settings("h2", <ajustes de SETTINGS>)`— y añade al
+informe el `peetprint_hash`, otra huella independiente (la de peet.ws, que sí
+incluye grupos y compresión de certificado) para no depender de una sola
+medida. Si con 16 extensiones el JA4 sale `t13d1516h2_8daaf6152771_02713d6af862`,
+la huella queda clavada y la prueba G responde si eso era la barrera.
+
 ## 5. Estado de la decisión
 
 * **Navegar (feed, miniaturas, ficha de vídeo en el feed):** resuelto y
@@ -617,7 +643,8 @@ por esa misma conexión y buscar después con ella. La H lo hace y lo cuenta.
   de iOS 9. El arreglo es el **túnel**: BoringSSL + nghttp2 dentro de la app,
   con el saludo TLS y el HTTP/2 de un Chrome. La 1.3.0 lo afina hasta la huella
   medida y añade tres pruebas (G, H, I) para saber qué pieza falta si aún no
-  entra. Sin relay ni nada fuera del aparato.
+  entra; la 1.3.1 cierra las dos extensiones que faltaban (ver **4 decies**).
+  Sin relay ni nada fuera del aparato.
 * **Comentarios y perfiles:** pendientes. Se sabe que la API móvil exige
   `X-Argus`/`X-Ladon` (ver 2.5); no se han vuelto a medir sobre HTTP/2. Los
   comentarios se quedan fuera por ahora; el botón lo explica.

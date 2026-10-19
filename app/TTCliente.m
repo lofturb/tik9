@@ -879,6 +879,11 @@ static NSError *TTError(TTCodigoError codigo, NSString *texto) {
                 // La receta en crudo: cifrados, extensiones y algoritmos de
                 // firma, para ver pieza a pieza que sobra o que falta.
                 if (receta.length) [linea appendFormat:@"  receta=%@", receta];
+                // El peetprint es otra huella (la de peet.ws), mas completa:
+                // incluye grupos y compresion de certificado.  La referencia se
+                // midio con el mismo Chrome; si difiere, dice por donde.
+                NSString *peet = [tls isKindOfClass:[NSDictionary class]] ? tls[@"peetprint_hash"] : nil;
+                if (peet.length) [linea appendFormat:@"  peetprint=%@ (referencia b8ce945a4d9a7a9b5b6132e3658fe033)", peet];
                 if (hash.length) {
                     [linea appendFormat:@"  akamai=%@", hash];
                     [linea appendString:[hash isEqualToString:referenciaHash]

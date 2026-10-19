@@ -329,6 +329,18 @@ static int tt_conectar(const char *host, char *error, size_t tam) {
 #define TT_GRUPOS "X25519Kyber768Draft00:X25519:P-256:P-384"
 
 /*
+ * Los mismos ajustes de HTTP/2 que van en la trama SETTINGS, pero dentro del
+ * saludo TLS: es la extension ALPS (application settings, la 17513 que manda
+ * Chrome).  Cada ajuste son seis bytes: el identificador (2) y el valor (4).
+ */
+static const uint8_t tt_alps_h2[] = {
+    0x00, 0x01, 0x00, 0x01, 0x00, 0x00,   /* HEADER_TABLE_SIZE    = 65536   */
+    0x00, 0x02, 0x00, 0x00, 0x00, 0x00,   /* ENABLE_PUSH          = 0       */
+    0x00, 0x04, 0x00, 0x60, 0x00, 0x00,   /* INITIAL_WINDOW_SIZE  = 6291456 */
+    0x00, 0x06, 0x00, 0x04, 0x00, 0x00,   /* MAX_HEADER_LIST_SIZE = 262144  */
+};
+
+/*
  * Chrome le dice al servidor que puede recibir el certificado comprimido con
  * zlib (la extension 27 del saludo).  Aqui se registra esa descompresion de
  * verdad, con la zlib del propio iOS: asi la extension aparece como en un
@@ -417,6 +429,13 @@ static SSL_CTX *tt_contexto(char *nota, size_t tam) {
         tt_nota(nota, tam, "alpn NO");
     }
 
+    /* Las dos extensiones que Chrome manda y que se piden por conexion; sin
+       ellas el saludo se queda en 14 extensiones y no es el de un Chrome:
+         - 5   (status_request): pedir el OCSP del certificado;
+         - 17513 (ALPS): los ajustes de HTTP/2 dentro del propio saludo.
+       Se ponen en tt_saludo, que es donde hay un objeto SSL. */
+    tt_nota(nota, tam, "ocsp, alps");
+
     /* La comprobacion del certificado la hace el sistema despues del saludo
        (ver tt_verificar_certificado): aqui no se le pide a BoringSSL, que no
        tiene las raices del aparato. */
@@ -440,6 +459,10 @@ static SSL *tt_saludo(SSL_CTX *ctx, int fd, const char *host, char *error, size_
        (menos brotli, que iOS 9 no trae). */
     SSL_set_enable_ech_grease(tls, 1);
     SSL_enable_signed_cert_timestamps(tls);
+    /* Las otras dos que faltaban para clavar las 16 extensiones de Chrome. */
+    SSL_enable_ocsp_stapling(tls);
+    (void)SSL_add_application_settings(tls, (const uint8_t *)"h2", 2,
+                                       tt_alps_h2, sizeof tt_alps_h2);
 #endif
     int r = SSL_connect(tls);
     if (r != 1) {
