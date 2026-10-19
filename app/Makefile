@@ -56,7 +56,13 @@ Tik9_RESOURCE_DIRS = Resources
 # -lc++ porque TTTunelCompat.cc es C++ (y BoringSSL tambien lo es por dentro):
 # libc++ es lo que trae iOS 9 para eso.  El enlazador se queda solo con lo que
 # se usa de verdad.
-Tik9_LDFLAGS = -Wl,-dead_strip -lc++
+#
+# -lc++abi hace falta ademas: BoringSSL tiene clases con funciones virtuales, y
+# sus tablas necesitan las de C++ (__class_type_info) y el operator delete, que
+# en iOS viven en libc++abi.  El libc++.tbd que trae este SDK de 9.3 no las
+# reexporta (el de verdad si lo hace), asi que se pide a mano.  El SDK tiene su
+# libc++abi.tbd, o sea que no hay nada que inventar.
+Tik9_LDFLAGS = -Wl,-dead_strip -lc++ -lc++abi
 
 # ---------------------------------------------------------------------------
 #  El "tunel": BoringSSL + nghttp2
