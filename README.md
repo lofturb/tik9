@@ -131,14 +131,27 @@ el mismo aparato y con la misma firma.
 El arreglo es el **túnel** (`app/TTTunel.c`): la app habla con TikTok con una pila
 propia, con las piezas de un navegador de verdad.
 
-* **BoringSSL**, la biblioteca TLS de Chrome: su lista de cifrados, sus curvas,
-  GREASE y las extensiones permutadas.
-* **nghttp2**, con los ajustes de HTTP/2 de Chrome (tabla de cabeceras de 64 kB,
-  ventana inicial de 6 MB).
+* **BoringSSL**, la biblioteca TLS de Chrome: su lista de cifrados, sus curvas
+  (con el grupo post-cuántico `X25519Kyber768Draft00` delante, el mismo que manda
+  un Chrome de 2024), sus ocho algoritmos de firma y en su orden, GREASE, las
+  extensiones permutadas, ECH de relleno y compresión de certificado.
+* **nghttp2**, con los ajustes de HTTP/2 de Chrome tal cual: tabla de cabeceras
+  de 64 kB, ventana inicial de 6 MB, ventana de conexión de 15 663 105, sin
+  tramas de prioridad y las pseudo-cabeceras en el orden de siempre.
+* Las **cabeceras completas** de un Edge 122 coherente con su User-Agent
+  (`sec-ch-ua*`, `sec-fetch-*`, `priority`, `accept-encoding`).
 
-Las dos se compilan para armv7/iOS 9 dentro de la construcción (con caché) y se
-enlazan en la app: **sin relay ni nada fuera del aparato**. Solo se usan para las
-rutas vetadas; el feed, el detalle y las páginas siguen por `NSURLSession`.
+La huella que TikTok tiene por buena está **medida** con `tls.peet.ws` (ver
+`HALLAZGOS.md` 4 nonies): JA4 `t13d1516h2_8daaf6152771_02713d6af862` y, en
+HTTP/2, `1:65536;2:0;4:6291456;6:262144|15663105|0|m,a,s,p`. La app no solo la
+imita: la **mide** en el aparato (prueba *I* del diagnóstico, con la receta en
+crudo) y prueba aparte si TikTok ata la identidad a la conexión que la emite
+(prueba *H*).
+
+Las dos bibliotecas se compilan para armv7/iOS 9 dentro de la construcción (con
+caché) y se enlazan en la app: **sin relay ni nada fuera del aparato**. Solo se
+usan para las rutas vetadas; el feed, el detalle y las páginas siguen por
+`NSURLSession`.
 
 La pantalla, entonces, muestra:
 

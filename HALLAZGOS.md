@@ -549,6 +549,57 @@ descubrir:
 
 ---
 
+## 4 nonies. **La huella exacta que TikTok tiene por buena** (medido el 2026-10-19)
+
+El caso **G** de la 1.2.0 contestó la pregunta que faltaba: el túnel ya hablaba
+como un navegador por debajo (TLS 1.3 con ChaCha20, ALPN `h2`, HTTP/2 y el
+certificado validado por el sistema, sin `SIN VERIFICAR`), y aun así TikTok
+devolvía `HTTP 200`, `0 B` y `tt_orcas_res: 1`. O sea: **no basta con "TLS
+moderno"; la barrera compara la huella entera de la conexión**.
+
+Para dejar de adivinar se buscó un oráculo que devuelve lo que ve el servidor.
+`https://tls.peet.ws/api/all` publica, para cada conexión, el JA3, el **JA4** y
+la huella de **HTTP/2 de Akamai** (ajustes, ventana, prioridades y orden de las
+pseudo-cabeceras). Desde este ordenador —cuya conexión sí pasa— se pidió la
+receta con `curl_cffi` impersonando a Chrome, y salió esto:
+
+| Qué | Valor medido |
+| --- | --- |
+| JA4 | `t13d1516h2_8daaf6152771_02713d6af862` |
+| Cifrados (15, ordenados) | `002f,0035,009c,009d,1301,1302,1303,c013,c014,c02b,c02c,c02f,c030,cca8,cca9` |
+| Extensiones (16, sin GREASE) | `0000,0005,000a,000b,000d,0010,0012,0017,001b,0023,002b,002d,0033,4469,fe0d,ff01` |
+| Algoritmos de firma (8, en orden) | `0403,0804,0401,0503,0805,0501,0806,0601` |
+| Grupos | `25497 (X25519Kyber768Draft00), 29 (X25519), 23 (P-256), 24 (P-384)` |
+| HTTP/2 (Akamai) | `1:65536;2:0;4:6291456;6:262144\|15663105\|0\|m,a,s,p` |
+| Hash de esa huella | `52d84b11737d980aef856699f885ca86` |
+
+Tres cosas que enseña la tabla y que no eran obvias:
+
+1. **JA4, no JA3.** Chrome permuta las extensiones y manda valores GREASE, así
+   que el JA3 cambia en cada conexión; el JA4 ordena y quita el ruido, y por eso
+   es el que se puede exigir. La parte que más se olvida es la última: **los
+   algoritmos de firma, en su orden**, que van dentro del hash.
+2. **El grupo post-cuántico va primero.** El 25497 (`X25519Kyber768Draft00`)
+   abre la lista de curvas. Un saludo sin él ya no es el de un Chrome de 2024.
+3. **HTTP/2 tiene una huella sorprendentemente corta:** cuatro ajustes
+   (`HEADER_TABLE_SIZE 65536`, `ENABLE_PUSH 0`, `INITIAL_WINDOW_SIZE 6291456`,
+   `MAX_HEADER_LIST_SIZE 262144`), una ventana de conexión de `15663105`, **sin
+   tramas de prioridad**, y las pseudo-cabeceras en el orden `:method,
+   :authority, :scheme, :path`. El túnel ya mandaba exactamente eso desde la
+   1.2.0.
+
+Con eso, la 1.3.0 hace dos cosas: afina el saludo hasta ese detalle (firma,
+curvas, ECH de relleno, sellos de tiempo, compresión de certificado con zlib y
+las cabeceras completas de un Edge 122 coherente con su User-Agent) y, sobre
+todo, **mide**: la prueba **I** pide `tls.peet.ws` *a través del túnel* y escribe
+en el informe el JA4, la huella de Akamai y la receta en crudo, comparadas con
+las de arriba. Así, si algo no cuadra, se ve qué pieza es en vez de suponerlo.
+
+La prueba **H** cubre la otra hipótesis, la que no tiene que ver con el TLS: que
+TikTok **ate la identidad (`ttwid`) a la conexión que la emitió**. Si es así, no
+basta con presentar el saludo de Chrome: hay que pedirle la identidad al borde
+por esa misma conexión y buscar después con ella. La H lo hace y lo cuenta.
+
 ## 5. Estado de la decisión
 
 * **Navegar (feed, miniaturas, ficha de vídeo en el feed):** resuelto y
@@ -561,11 +612,12 @@ descubrir:
   iOS 9, o red que corta la conexión). No firma nada: la app le pasa la
   dirección ya firmada.
 * **Buscar:** la petición está resuelta (firma, parámetros, `ttwid`, `msToken`,
-  reintento con el token que TikTok regala), pero **la barrera de TikTok decide
-  por la huella de la conexión** y rechaza la de iOS 9 en las rutas de búsqueda
-  (ver **4 septies**). El arreglo es el **túnel**: BoringSSL + nghttp2 dentro de
-  la app, con el saludo TLS y los ajustes de HTTP/2 de un Chrome. Sin relay ni
-  nada fuera del aparato.
+  reintento con el token que TikTok regala). Lo que falta es la conexión: la
+  barrera decide por la huella (ver **4 septies** y **4 nonies**) y rechaza la
+  de iOS 9. El arreglo es el **túnel**: BoringSSL + nghttp2 dentro de la app,
+  con el saludo TLS y el HTTP/2 de un Chrome. La 1.3.0 lo afina hasta la huella
+  medida y añade tres pruebas (G, H, I) para saber qué pieza falta si aún no
+  entra. Sin relay ni nada fuera del aparato.
 * **Comentarios y perfiles:** pendientes. Se sabe que la API móvil exige
   `X-Argus`/`X-Ladon` (ver 2.5); no se han vuelto a medir sobre HTTP/2. Los
   comentarios se quedan fuera por ahora; el botón lo explica.
