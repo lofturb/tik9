@@ -92,6 +92,19 @@ if [ ! -f "$DESTINO/lib/libssl.a" ]; then
     # En los SDK nuevos CommonRandom.h ya la trae y esto no estorba.
     INCLUIR_COMUN="-include CommonCrypto/CommonCryptor.h"
 
+    # Ajustes para compilar C++ moderno contra iOS 9:
+    #
+    #   _LIBCPP_DISABLE_AVAILABILITY  el libc++ de Apple marca con "solo desde
+    #     iOS 11" cosas como std::optional::value().  Esa marca es para saber
+    #     contra que sistema se puede enlazar, no para prohibir el codigo; aqui
+    #     las bibliotecas se enlazan dentro de la app y lo que falta del sistema
+    #     se pone a mano (ver app/TTTunelCompat.cc).  Sin esto no compila.
+    #   -fno-exceptions, -fno-sized-deallocation, -fno-aligned-allocation
+    #     hacen que el compilador no genere llamadas a piezas de libc++ que iOS 9
+    #     no trae (liberacion con tamano, reserva alineada) y que BoringSSL no
+    #     necesita porque no usa excepciones.
+    CXX_VIEJO="-D_LIBCPP_DISABLE_AVAILABILITY -fno-exceptions -fno-sized-deallocation -fno-aligned-allocation"
+
     # Que lo que usa el tunel exista en ese commit: si no, mejor saberlo aqui
     # que en un error de compilacion a mitad.
     for SIMBOLO in SSL_CTX_set_grease_enabled SSL_CTX_set_permute_extensions \
@@ -114,7 +127,7 @@ if [ ! -f "$DESTINO/lib/libssl.a" ]; then
         -DCMAKE_CXX_COMPILER="$CLANGXX" \
         -DCMAKE_ASM_COMPILER="$CLANG" \
         -DCMAKE_C_FLAGS="$OBJETIVO $INCLUIR_COMUN" \
-        -DCMAKE_CXX_FLAGS="$OBJETIVO $INCLUIR_COMUN" \
+        -DCMAKE_CXX_FLAGS="$OBJETIVO $INCLUIR_COMUN $CXX_VIEJO" \
         -DCMAKE_BUILD_TYPE=Release \
         -DOPENSSL_NO_ASM=1 \
         -DBUILD_TESTING=OFF \

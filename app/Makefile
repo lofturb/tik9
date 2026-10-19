@@ -39,7 +39,8 @@ Tik9_FILES = \
 	TTBusquedaViewController.m \
 	TTAjustesViewController.m \
 	TTSignaCore.c \
-	TTTunel.c
+	TTTunel.c \
+	TTTunelCompat.cc
 
 # QuartzCore para las capas (esquinas redondeadas, sombreado del texto) y
 # AVFoundation para reproducir.  MediaPlayer solo para el mando del sistema
@@ -51,7 +52,11 @@ Tik9_RESOURCE_DIRS = Resources
 
 # Todo lo que hay en Resources/ (Info.plist, iconos, imagenes de arranque) se
 # copia a la raiz del .app.  Theos hace esto automaticamente.
-Tik9_LDFLAGS = -Wl,-dead_strip
+#
+# -lc++ porque TTTunelCompat.cc es C++ (y BoringSSL tambien lo es por dentro):
+# libc++ es lo que trae iOS 9 para eso.  El enlazador se queda solo con lo que
+# se usa de verdad.
+Tik9_LDFLAGS = -Wl,-dead_strip -lc++
 
 # ---------------------------------------------------------------------------
 #  El "tunel": BoringSSL + nghttp2
