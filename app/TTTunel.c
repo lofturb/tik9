@@ -92,7 +92,7 @@ static ssize_t tt_enviar(nghttp2_session *sesion, const uint8_t *datos, size_t l
     return (ssize_t)largo;
 }
 
-static int tt_cabecera(nghttp2_session *sesion, const nghttp2_frame *marco,
+static int tt_recibir_cabecera(nghttp2_session *sesion, const nghttp2_frame *marco,
                        const uint8_t *nombre, size_t largo_nombre,
                        const uint8_t *valor, size_t largo_valor,
                        uint8_t banderas, void *usuario) {
@@ -471,7 +471,7 @@ static int tt_pedir_con(SSL *tls, const char *host, const char *ruta,
         return -1;
     }
     nghttp2_session_callbacks_set_send_callback(llamadas, tt_enviar);
-    nghttp2_session_callbacks_set_on_header_callback(llamadas, tt_cabecera);
+    nghttp2_session_callbacks_set_on_header_callback(llamadas, tt_recibir_cabecera);
     nghttp2_session_callbacks_set_on_data_chunk_recv_callback(llamadas, tt_datos);
     nghttp2_session_callbacks_set_on_stream_close_callback(llamadas, tt_cerrado);
 
