@@ -915,12 +915,14 @@ static NSError *TTError(TTCodigoError codigo, NSString *texto) {
 - (void)rematarInforme:(NSMutableArray *)lineas {
     NSString *todo = [lineas componentsJoinedByString:@"\n"];
 
-    // Si alguna prueba trajo videos, no hay nada que diagnosticar.  Se mira
-    // tambien la bateria, que prueba variantes: si una funciona, esa es la que
-    // hay que usar en la busqueda de verdad (y el informe dice cual).
+    // Si alguna prueba DE BUSQUEDA trajo videos, no hay nada que diagnosticar.
+    // Ojo: el feed tambien trae videos y no cuenta; su linea empieza por "feed",
+    // asi que solo se miran las lineas de la bateria y de las busquedas.
     BOOL salieron = NO;
     NSString *variante = nil;
     for (NSString *linea in lineas) {
+        BOOL esBusqueda = [linea hasPrefix:@"bateria "] || [linea hasPrefix:@"busqueda("];
+        if (!esBusqueda) continue;
         NSRange videos = [linea rangeOfString:@"videos="];
         if (videos.location == NSNotFound) continue;
         if ([linea substringFromIndex:videos.location + 7].integerValue <= 0) continue;

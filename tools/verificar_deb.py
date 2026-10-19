@@ -74,28 +74,35 @@ def main():
 
     if control is not None:
         print("=== control ===")
-        for miembro in abrir_tar(control).getmembers():
-            if miembro.name.endswith("control"):
-                texto = abrir_tar(control).extractfile(miembro).read().decode("utf-8", "replace")
-                for linea in texto.splitlines():
-                    print("  %s" % linea)
-            elif miembro.name in ("postinst", "preinst", "prerm", "postrm"):
-                print("  guion %s: si (mode %o)" % (miembro.name, miembro.mode))
+        with abrir_tar(control) as tar_control:
+            for miembro in tar_control.getmembers():
+                # Dentro del paquete las rutas van como ./postinst
+                nombre = miembro.name.rsplit("/", 1)[-1]
+                if nombre == "control":
+                    texto = tar_control.extractfile(miembro).read().decode("utf-8", "replace")
+                    for linea in texto.splitlines():
+                        print("  %s" % linea)
+                elif nombre in ("postinst", "preinst", "prerm", "postrm"):
+                    ejecutable = (miembro.mode & 0o111) != 0
+                    print("  guion %s: si (permisos %o, %s)"
+                          % (nombre, miembro.mode,
+                             "ejecutable" if ejecutable else "NO EJECUTABLE"))
 
     print("=== contenido (nombres importantes) ===")
     with abrir_tar(datos_tar) as tar:
         nombres = [m.name for m in tar.getmembers()]
         interesantes = [n for n in nombres
                         if n.endswith("Tik9") or n.endswith("Info.plist")
-                        or n.endswith("PkgInfo") or "/Applications/Tik9.app" == n.rstrip("/")]
+                        or n.endswith("PkgInfo") or n.rstrip("/").endswith("Tik9.app")]
         for n in sorted(set(interesantes)):
-            print("  %s" % n)
+            print("  /%s" % n.strip("/"))
         ejecutable = [n for n in nombres if n.endswith("/Tik9") and "Tik9.app" in n]
         print("=== resumen ===")
         print("  entradas          : %d" % len(nombres))
-        print("  /Applications     : %s"
-              % ("si" if any("/Applications/Tik9.app" in n for n in nombres) else "NO"))
-        print("  ejecutable        : %s" % (", ".join(ejecutable) or "NO"))
+        print("  se instala en     : %s"
+              % ("/Applications" if any("Applications/Tik9.app" in n for n in nombres)
+                 else "NO se ve /Applications"))
+        print("  ejecutable        : %s" % (", ".join("/" + e.strip("/") for e in ejecutable) or "NO"))
         tienen_permiso = [e for e in ejecutable
                           if [m for m in tar.getmembers() if m.name == e][0].mode & 0o111]
         print("  permiso de ejec.  : %s" % ("si" if tienen_permiso else "NO"))
